@@ -8,5 +8,5 @@ git push -u origin main
 
 
 git add .
-git commit -m "feat: initialize MongoDB connection and setup Express server with middleware"
+git commit -m "Update CORS configuration and credentials for Render and Vercel integration."
 git push
