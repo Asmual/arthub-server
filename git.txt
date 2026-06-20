@@ -1,0 +1,12 @@
+echo "# arthub-server" >> README.md
+git init
+git add .
+git commit -m "chore: initial backend structure and config setup"
+git branch -M main
+git remote add origin https://github.com/Asmual/arthub-server.git
+git push -u origin main
+
+
+git add .
+git commit -m "feat: initialize MongoDB connection and setup Express server with middleware"
+git push
