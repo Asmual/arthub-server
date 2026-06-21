@@ -8,5 +8,6 @@ git push -u origin main
 
 
 git add .
-git commit -m "Update CORS configuration and credentials for Render and Vercel integration."
+git commit -m "feat(api): implement artwork and artist routes with data models"
 git push
+git commit -m "feat(api): implement artwork and artist routes with data models"
