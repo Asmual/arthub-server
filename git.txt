@@ -8,6 +8,5 @@ git push -u origin main
 
 
 git add .
-git commit -m "feat(api): implement artwork and artist routes with data models"
-git push
-git commit -m "feat(api): implement artwork and artist routes with data models"
+git commit -m "feat(backend): integrate mongodb, implement core artwork/artist routes, and build authenticated review system"
+git push    
