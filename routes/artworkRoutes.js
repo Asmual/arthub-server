@@ -27,4 +27,39 @@ router.get('/featured', async (req, res) => {
   }
 });
 
+/**
+ * @route   GET /api/artworks/search
+ * @desc    Live search artworks by title or artist name
+ * @access  Public
+ */
+router.get('/search', async (req, res) => {
+  try {
+    const { query } = req.query;
+    const db = req.app.get('db');
+    const artworkCollection = db.collection('artworks');
+
+    if (!query || query.trim() === '') {
+      return res.status(200).json([]);
+    }
+
+    // Performs case-insensitive regex search on title and artistName fields
+    const searchResults = await artworkCollection
+      .find({
+        $or: [
+          { title: { $regex: query, $options: 'i' } },
+          { artistName: { $regex: query, $options: 'i' } }
+        ]
+      })
+      .toArray();
+
+    res.status(200).json(searchResults);
+  } catch (error) {
+    console.error("Search API Error:", error);
+    res.status(500).json({ 
+      message: "Server error during search", 
+      error: error.message 
+    });
+  }
+});
+
 module.exports = router;
