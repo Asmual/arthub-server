@@ -18,7 +18,6 @@ const client = new MongoClient(uri, {
 async function connectDB() {
   try {
     await client.connect();
-    console.log("MongoDB Connected Successfully! ");
     
     const db = client.db("artHub"); 
     return db;

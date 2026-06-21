@@ -7,10 +7,7 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'https://arthub-three.vercel.app'
-  ],
+  origin: true, 
   credentials: true
 }));
 
@@ -19,16 +16,26 @@ app.use(express.json());
 async function startServer() {
   try {
     const db = await connectDB();
-    console.log("MongoDB connected successfully");
+    console.log("MongoDB Connected Successfully!");
+
+    app.set('db', db);
 
     app.get('/', (req, res) => {
-      res.send('ArtHub Server is running... ');
+      res.send('ArtHub Server is running...');
     });
 
-    const artistCollection = db.collection('artists');
+    // API Route Mounts
+    const artistRoutes = require('./routes/artistRoutes');
+    app.use('/api/artists', artistRoutes);
+
+    const artworkRoutes = require('./routes/artworkRoutes');
+    app.use('/api/artworks', artworkRoutes);
+
+    const reviewRoutes = require('./routes/reviewRoutes');
+    app.use('/api/reviews', reviewRoutes);
 
     app.listen(port, () => {
-      console.log(`Server is running on port: ${port} `);
+      console.log(`Server is running on port: ${port}`);
     });
 
   } catch (error) {
