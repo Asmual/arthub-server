@@ -8,5 +8,5 @@ git push -u origin main
 
 
 git add .
-git commit -m "feat(payment): add stripe hosted checkout session endpoint"
+git commit -m "git commit -m "feat(server): build dynamic artist directory aggregation endpoints""
 git push

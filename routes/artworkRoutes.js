@@ -42,7 +42,7 @@ router.get('/search', async (req, res) => {
       return res.status(200).json([]);
     }
 
-    // Performs case-insensitive regex search on title and artistName fields
+    // Performs case-insensitive regex search on title and artistName fields safely
     const searchResults = await artworkCollection
       .find({
         $or: [
