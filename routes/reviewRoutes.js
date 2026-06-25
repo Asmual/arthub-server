@@ -1,114 +1,78 @@
-const express = require('express');
-const { ObjectId } = require('mongodb');
-const router = express.Router();
+const express = require("express");
+const router  = express.Router();
+const { ObjectId } = require("mongodb");
 
-/**
- * @route   POST /api/reviews
- * @desc    Persist a new comment bound to a unique user session and artwork
- * @access  Public (Verification handled via payload parsing)
- */
-router.post('/', async (req, res) => {
+// POST /api/reviews
+router.post("/", async (req, res) => {
   try {
-    const db = req.app.get('db');
-    const reviewCollection = db.collection('reviews');
-
+    const db = req.app.get("db");
     const { artworkId, userEmail, userName, userImage, text } = req.body;
 
-    if (!artworkId || !userEmail || !text.trim()) {
-      return res.status(400).json({ message: "Required parameters are missing" });
+    if (!artworkId || !userEmail || !text?.trim()) {
+      return res.status(400).json({ message: "artworkId, userEmail, text are required" });
     }
 
-    const newReview = {
-      artworkId,
-      userEmail,
-      userName: userName || "Authenticated User",
+    const doc = {
+      artworkId, userEmail,
+      userName:  userName  || "User",
       userImage: userImage || "",
-      text: text.trim(),
-      createdAt: new Date()
+      text:      text.trim(),
+      createdAt: new Date(),
     };
 
-    const result = await reviewCollection.insertOne(newReview);
-    res.status(201).json({ message: "Review created", reviewId: result.insertedId });
-  } catch (error) {
-    console.error("Post review tracking fault:", error);
-    res.status(500).json({ message: "Internal runtime server error", error: error.message });
+    const result = await db.collection("reviews").insertOne(doc);
+    res.status(201).json({ ...doc, _id: result.insertedId });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to create review", error: err.message });
   }
 });
 
-/**
- * @route   GET /api/reviews/:artworkId
- * @desc    Fetch ordered reviews matching target artwork reference identifier
- * @access  Public
- */
-router.get('/:artworkId', async (req, res) => {
+// GET /api/reviews/:artworkId
+router.get("/:artworkId", async (req, res) => {
   try {
-    const db = req.app.get('db');
-    const reviewCollection = db.collection('reviews');
-    const { artworkId } = req.params;
-
-    const reviews = await reviewCollection
-      .find({ artworkId: artworkId })
+    const db = req.app.get("db");
+    const reviews = await db.collection("reviews")
+      .find({ artworkId: req.params.artworkId })
       .sort({ createdAt: -1 })
       .toArray();
-
-    res.status(200).json(reviews);
-  } catch (error) {
-    console.error("Get reviews tracking fault:", error);
-    res.status(500).json({ message: "Database query fault encountered", error: error.message });
+    res.json(reviews);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch reviews", error: err.message });
   }
 });
 
-/**
- * @route   PUT /api/reviews/:id
- * @desc    Update text document attributes of a specific comment instance
- * @access  Public (Enforced client ownership checks matching email context)
- */
-router.put('/:id', async (req, res) => {
+// PUT /api/reviews/:id — owner only (matched by userEmail)
+router.put("/:id", async (req, res) => {
   try {
-    const db = req.app.get('db');
-    const reviewCollection = db.collection('reviews');
-    const { id } = req.params;
+    const db  = req.app.get("db");
     const { text, userEmail } = req.body;
-
-    const query = { _id: new ObjectId(id), userEmail: userEmail };
-    const update = { $set: { text: text.trim(), updatedAt: new Date() } };
-
-    const result = await reviewCollection.updateOne(query, update);
-
+    const result = await db.collection("reviews").updateOne(
+      { _id: new ObjectId(req.params.id), userEmail },
+      { $set: { text: text.trim(), updatedAt: new Date() } }
+    );
     if (result.matchedCount === 0) {
-      return res.status(403).json({ message: "Unauthorized change attempt or document missing" });
+      return res.status(403).json({ message: "Not found or unauthorized" });
     }
-
-    res.status(200).json({ message: "Review modified successfully" });
-  } catch (error) {
-    console.error("Modify review tracking fault:", error);
-    res.status(500).json({ message: "Database patch failed", error: error.message });
+    res.json({ message: "Review updated" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to update review", error: err.message });
   }
 });
 
-/**
- * @route   DELETE /api/reviews/:id
- * @desc    Purge a comment collection document matching specific entry context
- * @access  Public (Enforced client ownership checks matching email context)
- */
-router.delete('/:id', async (req, res) => {
+// DELETE /api/reviews/:id — owner only
+router.delete("/:id", async (req, res) => {
   try {
-    const db = req.app.get('db');
-    const reviewCollection = db.collection('reviews');
-    const { id } = req.params;
+    const db  = req.app.get("db");
     const { userEmail } = req.body;
-
-    const query = { _id: new ObjectId(id), userEmail: userEmail };
-    const result = await reviewCollection.deleteOne(query);
-
+    const result = await db.collection("reviews").deleteOne({
+      _id: new ObjectId(req.params.id), userEmail,
+    });
     if (result.deletedCount === 0) {
-      return res.status(403).json({ message: "Unauthorized purge attempt or document missing" });
+      return res.status(403).json({ message: "Not found or unauthorized" });
     }
-
-    res.status(200).json({ message: "Review deleted successfully" });
-  } catch (error) {
-    console.error("Purge review tracking fault:", error);
-    res.status(500).json({ message: "Database drop processing failed", error: error.message });
+    res.json({ message: "Review deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to delete review", error: err.message });
   }
 });
 

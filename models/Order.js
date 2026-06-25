@@ -1,33 +1,27 @@
-const { ObjectId } = require('mongodb');
+/**
+ * Helper to structure and validate order documents before inserting into the MongoDB 'orders' collection.
+ * Supports both artwork purchases and tier subscription models.
+ */
+const prepareOrderData = (data) => {
+  const order = {
+    artworkId: data.artworkId || null,
+    buyerId: data.buyerId || "",
+    buyerEmail: data.buyerEmail ? data.buyerEmail.trim().toLowerCase() : "",
+    price: Number(data.price) || 0,
+    transactionId: data.transactionId || "",
+    type: ["purchase", "subscription"].includes(data.type) ? data.type : "purchase",
+    tier: ["free", "pro", "premium"].includes(data.tier) ? data.tier : null,
+    status: ["paid", "failed", "pending"].includes(data.status) ? data.status : "paid",
+    createdAt: data.createdAt || new Date(),
+    updatedAt: new Date()
+  };
 
-router.post('/verify-success-order', async (req, res) => {
-  try {
-    const { sessionId, artworkId, buyerId, buyerEmail, price } = req.body;
+  // Basic runtime validation rules
+  if (!order.buyerId) throw new Error("Validation Error: buyerId is strictly required.");
+  if (!order.transactionId) throw new Error("Validation Error: transactionId is strictly required.");
+  if (order.price <= 0 && order.type === "purchase") throw new Error("Validation Error: price must be greater than 0.");
 
-    const orderDocument = {
-      artworkId: new ObjectId(artworkId),
-      buyerId: buyerId,
-      buyerEmail: buyerEmail,
-      price: Number(price),
-      transactionId: sessionId,
-      status: 'paid',
-      createdAt: new Date()
-    };
+  return order;
+};
 
-    const result = await db.collection('orders').insertOne(orderDocument);
-
-    await db.collection('artworks').updateOne(
-      { _id: new ObjectId(artworkId) },
-      { $set: { isSold: true, buyerId: buyerId } }
-    );
-
-    res.status(201).json({ 
-      success: true, 
-      message: "Order recorded successfully", 
-      orderId: result.insertedId 
-    });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+module.exports = { prepareOrderData };

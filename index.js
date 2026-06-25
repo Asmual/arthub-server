@@ -3,16 +3,16 @@ const cors = require("cors");
 require("dotenv").config();
 const connectDB = require("./config/db");
 
-// Import routes at the top layer for optimized memory allocation
 const artistRoutes = require("./routes/artistRoutes");
 const artworkRoutes = require("./routes/artworkRoutes");
 const reviewRoutes = require("./routes/reviewRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
+const userRoutes = require("./routes/userRoutes");
+const adminRoutes = require("./routes/adminRoutes");
 
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Production-ready CORS configuration supporting local and deployed environments
 const allowedOrigins = [
   "http://localhost:3000",
   "https://arthub-three.vercel.app",
@@ -20,46 +20,56 @@ const allowedOrigins = [
 
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.indexOf(origin) === -1) {
-        const msg = "The CORS policy for this site does not allow access from the specified Origin.";
-        return callback(new Error(msg), false);
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
       }
-      return callback(null, true);
+      callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
-  }),
+  })
 );
 
+app.use("/api/payments/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 
-// Global connection state handler
 async function startServer() {
   try {
     const db = await connectDB();
-    console.log("MongoDB Connected Successfully!");
 
-    // Set stable db link accessible across express controllers
-    app.set("db", db);
-
-    // Root Health Check Route
+    // Test the database connection
     app.get("/", (req, res) => {
-      res.send("ArtHub Server is running perfectly...");
+      res.send("ArtHub Server running with Database Connected.");
     });
+    // Database instance is now available for route handlers via app.locals
+    app.set("db", db);
+    console.log("MongoDB Connection Successful!");
 
-    // Dedicated API Route Mounts
+    // Route handlers for different API endpoints
     app.use("/api/artists", artistRoutes);
     app.use("/api/artworks", artworkRoutes);
     app.use("/api/reviews", reviewRoutes);
     app.use("/api/payments", paymentRoutes);
+    app.use("/api/users", userRoutes);
+    app.use("/api/admin", adminRoutes);
 
-    // Initialize server listener
-    app.listen(port, () => {
-      console.log(`Server is running securely on port: ${port}`);
+    // Global error handling middleware
+    app.use((err, req, res, next) => {
+      console.error("Global Error Caught:", err);
+      res.status(500).json({
+        message: "Internal Server Error",
+        error: err.message,
+      });
     });
+
+    app.listen(port, () => {
+      console.log(` Server running on port ${port}`);
+      console.log(` API Link: http://localhost:${port}`);
+    });
+
   } catch (error) {
-    console.error("Failed to start server properly:", error);
+
+    console.error("MongoDB connection or Server startup failed:", error);
     process.exit(1);
   }
 }
