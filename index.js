@@ -30,7 +30,10 @@ app.use(
   })
 );
 
-app.use("/api/payments/webhook", express.raw({ type: "application/json" }));
+// CRITICAL: Stripe webhook requires raw body payload before express.json() parser
+app.use("/api/payment/webhook", express.raw({ type: "application/json" }));
+
+// Standard JSON parser for all other API endpoints
 app.use(express.json());
 
 async function startServer() {
@@ -41,19 +44,20 @@ async function startServer() {
     app.get("/", (req, res) => {
       res.send("ArtHub Server running with Database Connected.");
     });
-    // Database instance is now available for route handlers via app.locals
+
+    // Share database instance across route handlers using app.set
     app.set("db", db);
     console.log("MongoDB Connection Successful!");
 
-    // Route handlers for different API endpoints
+    // Main API Route Handlers
     app.use("/api/artists", artistRoutes);
     app.use("/api/artworks", artworkRoutes);
     app.use("/api/reviews", reviewRoutes);
-    app.use("/api/payments", paymentRoutes);
+    app.use("/api/payment", paymentRoutes);
     app.use("/api/users", userRoutes);
     app.use("/api/admin", adminRoutes);
 
-    // Global error handling middleware
+    // Global Centralized Error Handling Middleware
     app.use((err, req, res, next) => {
       console.error("Global Error Caught:", err);
       res.status(500).json({
@@ -63,12 +67,11 @@ async function startServer() {
     });
 
     app.listen(port, () => {
-      console.log(` Server running on port ${port}`);
-      console.log(` API Link: http://localhost:${port}`);
+      console.log(`Server running on port ${port}`);
+      console.log(`API Link: http://localhost:${port}`);
     });
 
   } catch (error) {
-
     console.error("MongoDB connection or Server startup failed:", error);
     process.exit(1);
   }

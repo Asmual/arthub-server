@@ -8,5 +8,5 @@ git push -u origin main
 
 
 git add .
-git commit -m "feat(server): build dynamic artist directory aggregation endpoints"
+git commit -m "implement top artists endpoint sorted by sales count,add detailed artist profile and aggregation stats endpoints"
 git push

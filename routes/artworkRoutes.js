@@ -39,7 +39,7 @@ router.get("/featured", async (req, res) => {
 router.get("/", async (req, res) => {
   try {
     const db = req.app.get("db");
-    const {
+    let {
       search,
       category,
       artistId,
@@ -50,70 +50,72 @@ router.get("/", async (req, res) => {
       limit = 12,
     } = req.query;
 
-    const filterConditions = [];
+    // ১. একটি সিঙ্গেল অবজেক্ট হিসেবে ফিল্টার কন্ডিশন তৈরি করা (যাতে $and এর ঝামেলা না হয়)
+    const finalFilter = {};
 
-    // Search filter handling
-    if (search?.trim()) {
-      filterConditions.push({
-        $or: [
-          { title: { $regex: search.trim(), $options: "i" } },
-          { artistName: { $regex: search.trim(), $options: "i" } },
-        ],
-      });
+    // ড্রাফট ও বিক্রি হয়ে যাওয়া আর্টওয়ার্ক ফিল্টার আউট করা (ঐচ্ছিক, প্রয়োজন হলে রাখতে পারো)
+    // finalFilter.isSold = { $ne: true };
+    // finalFilter.isDraft = { $ne: true };
+
+    // সার্চ ফিল্টার হ্যান্ডেলিং (Title অথবা Artist Name দিয়ে)
+    if (search && search.trim() !== "" && search !== "undefined") {
+      const searchRegex = new RegExp(search.trim(), "i");
+      finalFilter.$or = [
+        { title: searchRegex },
+        { artistName: searchRegex }
+      ];
     }
 
-    // Category filter handling
-    if (category?.trim()) {
-      filterConditions.push({ category: { $regex: category.trim(), $options: "i" } });
+    // ক্যাটাগরি ফিল্টার হ্যান্ডেলিং
+    if (category && category.trim() !== "" && category !== "undefined" && category !== "all") {
+      finalFilter.category = { $regex: category.trim(), $options: "i" };
     }
 
-    // Artist ownership filter handling
-    if (artistId) {
+    // আর্টিস্ট আইডি ফিল্টার হ্যান্ডελিং
+    if (artistId && artistId !== "undefined") {
       const oid = toOid(artistId);
-      filterConditions.push({
-        $or: [
-          { userId: oid },
-          { userId: artistId },
-          { artistId: oid },
-          { artistId: artistId },
-        ],
-      });
+      finalFilter.$or = [
+        { userId: oid },
+        { userId: artistId },
+        { artistId: oid },
+        { artistId: artistId },
+      ];
     }
 
-    // Price range filter handling
-    if (minPrice || maxPrice) {
-      const priceFilter = {};
-      if (minPrice) priceFilter.$gte = Number(minPrice);
-      if (maxPrice) priceFilter.$lte = Number(maxPrice);
-      filterConditions.push({ price: priceFilter });
+    // প্রাইজ রেঞ্জ ফিল্টার হ্যান্ডেলিং
+    if ((minPrice && minPrice !== "undefined") || (maxPrice && maxPrice !== "undefined")) {
+      finalFilter.price = {};
+      if (minPrice && minPrice !== "undefined") finalFilter.price.$gte = Number(minPrice);
+      if (maxPrice && maxPrice !== "undefined") finalFilter.price.$lte = Number(maxPrice);
     }
 
-    // Combine filter arrays or fallback to empty query object
-    const finalFilter = filterConditions.length > 0 ? { $and: filterConditions } : {};
-
-    // Determine sorting preference mechanics
+    // সর্টিং মেকানিজম
     const sortMap = {
       newest: { createdAt: -1 },
       "price-asc": { price: 1 },
       "price-desc": { price: -1 },
     };
     const sortOpt = sortMap[sort] || { createdAt: -1 };
-    
-    const skip = (Number(page) - 1) * Number(limit);
+   
+    const currentPage = Math.max(1, Number(page));
+    const currentLimit = Math.max(1, Number(limit));
+    const skip = (currentPage - 1) * currentLimit;
+
+    // ডেটাবেজ কোয়েরি এক্সিকিউশন
     const total = await db.collection("artworks").countDocuments(finalFilter);
     const artworks = await db
       .collection("artworks")
       .find(finalFilter)
       .sort(sortOpt)
       .skip(skip)
-      .limit(Number(limit))
+      .limit(currentLimit)
       .toArray();
 
     res.json({
       artworks,
       total,
-      page: Number(page),
-      totalPages: Math.ceil(total / Number(limit)),
+      page: currentPage,
+      totalPages: Math.ceil(total / currentLimit),
     });
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch artworks", error: err.message });
@@ -126,7 +128,6 @@ router.get("/:id", async (req, res) => {
     const db = req.app.get("db");
     const oid = toOid(req.params.id);
 
-    // Aggregate query to combine artwork data with dynamic user database fields
     const artworkPipeline = [
       {
         $match: {
@@ -166,14 +167,13 @@ router.get("/:id", async (req, res) => {
     ];
 
     const results = await db.collection("artworks").aggregate(artworkPipeline).toArray();
-    
+   
     if (!results || results.length === 0) {
       return res.status(404).json({ message: "Artwork not found" });
     }
 
     const artwork = results[0];
 
-    // Map dynamic fields if relational user context document exists
     if (artwork.artistDetails) {
       artwork.artistName = artwork.artistDetails.name || artwork.artistName;
       artwork.artistImage = artwork.artistDetails.photoURL || artwork.artistDetails.image || "";
@@ -190,11 +190,11 @@ router.post("/", async (req, res) => {
   try {
     const db = req.app.get("db");
     const { title, description, price, category, image, userId, artistName } = req.body;
-    
+   
     if (!title || !price || !image || !userId) {
       return res.status(400).json({ message: "title, price, image, userId are required" });
     }
-    
+   
     const doc = {
       title,
       description,
@@ -207,7 +207,7 @@ router.post("/", async (req, res) => {
       isDraft: false,
       createdAt: new Date(),
     };
-    
+   
     const result = await db.collection("artworks").insertOne(doc);
     res.status(201).json({ ...doc, _id: result.insertedId });
   } catch (err) {
@@ -221,7 +221,7 @@ router.put("/:id", async (req, res) => {
     const db = req.app.get("db");
     const oid = toOid(req.params.id);
     const { title, description, price, category, image } = req.body;
-    
+   
     const result = await db
       .collection("artworks")
       .findOneAndUpdate(
@@ -238,7 +238,7 @@ router.put("/:id", async (req, res) => {
         },
         { returnDocument: "after" }
       );
-      
+     
     if (!result) return res.status(404).json({ message: "Artwork not found" });
     res.json(result);
   } catch (err) {
@@ -251,11 +251,11 @@ router.delete("/:id", async (req, res) => {
   try {
     const db = req.app.get("db");
     const oid = toOid(req.params.id);
-    
+   
     const result = await db.collection("artworks").deleteOne({
       $or: [{ _id: oid }, { _id: req.params.id }],
     });
-    
+   
     if (result.deletedCount === 0) {
       return res.status(404).json({ message: "Artwork not found" });
     }
@@ -284,7 +284,7 @@ router.get("/:id/comments", async (req, res) => {
   }
 });
 
-// POST /api/artworks/:id/comments — Submit new comment (Requires verified transactional purchase history)
+// POST /api/artworks/:id/comments — Submit new comment
 router.post("/:id/comments", async (req, res) => {
   try {
     const db = req.app.get("db");
@@ -300,7 +300,7 @@ router.post("/:id/comments", async (req, res) => {
       buyerEmail: userEmail,
       status: "paid",
     });
-    
+   
     if (!purchased) {
       return res.status(403).json({ message: "Purchase this artwork to leave a comment" });
     }
@@ -314,7 +314,7 @@ router.post("/:id/comments", async (req, res) => {
       text: text.trim(),
       createdAt: new Date(),
     };
-    
+   
     const result = await db.collection("reviews").insertOne(doc);
     res.status(201).json({ ...doc, _id: result.insertedId });
   } catch (err) {
@@ -322,13 +322,13 @@ router.post("/:id/comments", async (req, res) => {
   }
 });
 
-// PUT /api/artworks/:id/comments/:commentId — Edit personal comment description values
+// PUT /api/artworks/:id/comments/:commentId — Edit personal comment
 router.put("/:id/comments/:commentId", async (req, res) => {
   try {
     const db = req.app.get("db");
     const oid = toOid(req.params.commentId);
     const { text, userEmail } = req.body;
-    
+   
     const result = await db
       .collection("reviews")
       .findOneAndUpdate(
@@ -336,7 +336,7 @@ router.put("/:id/comments/:commentId", async (req, res) => {
         { $set: { text: text.trim(), updatedAt: new Date() } },
         { returnDocument: "after" }
       );
-      
+     
     if (!result) {
       return res.status(404).json({ message: "Comment not found or unauthorized" });
     }
@@ -346,7 +346,7 @@ router.put("/:id/comments/:commentId", async (req, res) => {
   }
 });
 
-// DELETE /api/artworks/:id/comments/:commentId — Remove comments (Allowed for comment author OR artwork creator)
+// DELETE /api/artworks/:id/comments/:commentId — Remove comments
 router.delete("/:id/comments/:commentId", async (req, res) => {
   try {
     const db = req.app.get("db");
@@ -358,7 +358,6 @@ router.delete("/:id/comments/:commentId", async (req, res) => {
       return res.status(400).json({ message: "User credentials are required" });
     }
 
-    // Retrieve target comment record parameters
     const comment = await db.collection("reviews").findOne({
       $or: [{ _id: commentOid }, { _id: req.params.commentId }],
     });
@@ -367,12 +366,10 @@ router.delete("/:id/comments/:commentId", async (req, res) => {
       return res.status(404).json({ message: "Comment not found" });
     }
 
-    // Retrieve primary contextual artwork payload
     const artwork = await db.collection("artworks").findOne({
       $or: [{ _id: artworkOid }, { _id: req.params.id }],
     });
 
-    // Permission flag checking engine
     const isCommentAuthor = (userEmail && comment.userEmail === userEmail) || (userId && comment.userId === userId);
     const isArtworkOwner = artwork && ((userId && artwork.userId === userId) || (userId && artwork.artistId === userId));
 
@@ -380,7 +377,6 @@ router.delete("/:id/comments/:commentId", async (req, res) => {
       return res.status(403).json({ message: "Unauthorized to delete this comment" });
     }
 
-    // Process targeted execution delete command
     await db.collection("reviews").deleteOne({ _id: comment._id });
     res.json({ message: "Comment successfully deleted" });
   } catch (err) {

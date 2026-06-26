@@ -1,18 +1,16 @@
-// backend/middlewares/authMiddleware.js
 const { ObjectId } = require("mongodb");
 
+// Middleware to verify if the request contains a valid authorization structure
 const verifyToken = async (req, res, next) => {
   try {
-
     const authHeader = req.headers.authorization;
-    
+   
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({ message: "Unauthorized access! Missing token." });
     }
 
     const token = authHeader.split(" ")[1];
-    
-    req.userToken = token; 
+    req.userToken = token;
 
     next();
   } catch (error) {
@@ -20,22 +18,26 @@ const verifyToken = async (req, res, next) => {
   }
 };
 
-
+// Middleware to authorize specific user roles against MongoDB storage rows
 const verifyRole = (allowedRoles) => {
   return async (req, res, next) => {
     try {
       const db = req.app.get("db");
-      
-      const userEmail = req.headers.email; 
+      const userEmail = req.headers.email || req.headers["user-email"];
 
       if (!userEmail) {
         return res.status(401).json({ message: "User email tracking context missing." });
       }
 
+      // Explicitly targeted unified "user" collection schema row matching
       const user = await db.collection("user").findOne({ email: userEmail });
 
-      if (!user || !allowedRoles.includes(user.role)) {
-        return res.status(403).json({ message: "Forbidden! You do not have permission to view this data." });
+      if (!user) {
+        return res.status(404).json({ message: "User profile not found inside platform system." });
+      }
+
+      if (!allowedRoles.includes(user.role)) {
+        return res.status(403).json({ message: "Forbidden! Lacking sufficient administrative clear level." });
       }
 
       req.user = user;
