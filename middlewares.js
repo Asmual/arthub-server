@@ -5,25 +5,28 @@ const jwt = require("jsonwebtoken");
 const verifyToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-   
+
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ success: false, message: "Unauthorized access! Missing token." });
+      return res.status(401).json({
+        message: "Unauthorized access!"
+      });
     }
 
     const token = authHeader.split(" ")[1];
 
-    // Real JWT Verification using your environment secret key
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Attaching the decoded payload to the request target object securely
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
+
     req.user = decoded;
     req.decoded = decoded;
-    req.userToken = token;
 
     next();
-  } catch (error) {
-    console.error("JWT Token Verification Fail:", error.message);
-    return res.status(403).json({ success: false, message: "Forbidden access! Invalid or expired token." });
+  } catch (err) {
+    return res.status(401).json({
+      message: "Invalid token"
+    });
   }
 };
 
