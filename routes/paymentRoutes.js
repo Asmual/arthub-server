@@ -11,6 +11,40 @@ const prepareOrderData = typeof orderModule === "function"
   : (orderModule.prepareOrderData || orderModule.default);
 
 // -------------------------------------------------------------------------
+// GET: Fetch all checkout orders from 'orders' collection (Admin Access Only)
+// Route resolves to: GET /api/payment/all-transactions
+// -------------------------------------------------------------------------
+router.get("/all-transactions", verifyToken, async (req, res) => {
+  try {
+    const db = req.app.get("db");
+    
+    // Fallback chain to catch email from any token context or raw header safely
+    const userEmail = req.user?.email || req.decoded?.email || req.headers.email;
+
+    if (!userEmail) {
+      return res.status(401).json({ success: false, message: "Unauthorized. User identity context missing." });
+    }
+
+    // Validate if requesting entity holds administrative clearance
+    const requestingUser = await db.collection("user").findOne({ email: userEmail });
+    if (!requestingUser || requestingUser.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Forbidden. Administrative privileges required." });
+    }
+
+    // Fetch transactions sorted from newest to oldest
+    const transactions = await db.collection("orders")
+      .find({})
+      .sort({ _id: -1 })
+      .toArray();
+
+    return res.status(200).json(transactions);
+  } catch (error) {
+    console.error("Master Ledger Aggregation Failure:", error.message);
+    return res.status(500).json({ success: false, message: "Internal server ledger tracking failure." });
+  }
+});
+
+// -------------------------------------------------------------------------
 // POST: Initialize Stripe Dynamic Checkout Session Safely
 // Route resolves to: POST /api/payment/create-checkout-session
 // -------------------------------------------------------------------------
@@ -18,7 +52,7 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
   try {
     const db = req.app.get("db");
     const { artworkId, price } = req.body;
-    const userEmail = req.headers.email || req.headers["user-email"] || req.body.userEmail;
+    const userEmail = req.headers.email || req.headers["user-email"] || req.body.userEmail || req.user?.email;
 
     if (!userEmail) {
       return res.status(400).json({ success: false, message: "User email tracking context missing." });

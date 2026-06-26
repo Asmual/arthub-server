@@ -8,5 +8,5 @@ git push -u origin main
 
 
 git add .
-git commit -m "implement top artists endpoint sorted by sales count,add detailed artist profile and aggregation stats endpoints"
+git commit -m "update token verification middleware and Fix token validation and user role checking"
 git push
