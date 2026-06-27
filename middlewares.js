@@ -1,66 +1,50 @@
-const { ObjectId } = require("mongodb");
 const jwt = require("jsonwebtoken");
 
-// Middleware to verify if the request contains a valid authorization structure and JWT token
+// Verify JWT token from Authorization header
 const verifyToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({
-        message: "Unauthorized access!"
-      });
+      return res.status(401).json({ message: "Unauthorized: No token provided." });
     }
 
     const token = authHeader.split(" ")[1];
-
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET
-    );
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     req.user = decoded;
     req.decoded = decoded;
-
     next();
   } catch (err) {
-    return res.status(401).json({
-      message: "Invalid token"
-    });
+    return res.status(401).json({ message: "Unauthorized: Invalid or expired token." });
   }
 };
 
-// Middleware to authorize specific user roles against MongoDB storage rows
+// Verify user role against allowed roles from DB
 const verifyRole = (allowedRoles) => {
   return async (req, res, next) => {
     try {
       const db = req.app.get("db");
-      
-      // Pulling verified email safely from token context fallback chain rather than mutable headers
-      const userEmail = req.decoded?.email || req.user?.email || req.headers.email || req.headers["user-email"];
+      const userEmail = req.decoded?.email || req.user?.email;
 
       if (!userEmail) {
-        return res.status(401).json({ success: false, message: "User email tracking context missing." });
+        return res.status(401).json({ success: false, message: "Token missing email context." });
       }
 
-      // Explicitly targeted unified "user" collection schema row matching
       const user = await db.collection("user").findOne({ email: userEmail });
 
       if (!user) {
-        return res.status(404).json({ success: false, message: "User profile not found inside platform system." });
+        return res.status(404).json({ success: false, message: "User not found in database." });
       }
 
-      // Verify if the user's role exists within the allowedRoles array
       if (!allowedRoles.includes(user.role)) {
-        return res.status(403).json({ success: false, message: "Forbidden! Lacking sufficient administrative clearance level." });
+        return res.status(403).json({ success: false, message: "Forbidden: Insufficient role privileges." });
       }
 
-      // Overwrite/attach the complete db user data profile context
       req.dbUser = user;
       next();
     } catch (error) {
-      console.error("Role Authorization System Error:", error.message);
-      return res.status(500).json({ success: false, message: "Role verification breakdown.", error: error.message });
+      return res.status(500).json({ success: false, message: "Role verification failed.", error: error.message });
     }
   };
 };
