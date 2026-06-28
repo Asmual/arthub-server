@@ -1,6 +1,7 @@
-const jwt = require("jsonwebtoken");
+// middlewares.js
+// const { auth } = require("./auth"); // Make sure this points correctly to your BetterAuth configuration file
+const { ObjectId } = require("mongodb");
 
-// Verify JWT token from Authorization header
 const verifyToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -10,17 +11,31 @@ const verifyToken = async (req, res, next) => {
     }
 
     const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log("Incoming Token:", token);
 
-    req.user = decoded;
-    req.decoded = decoded;
+    // Verify the BetterAuth session using the session token directly
+    const session = await auth.api.getSession({
+      headers: {
+        authorization: `Bearer ${token}`
+      }
+    });
+    console.log("Resolved Session:", session);
+
+    if (!session || !session.user) {
+      return res.status(401).json({ message: "Unauthorized: Invalid or expired token." });
+    }
+
+    // Attach user information to the request object
+    req.user = session.user;
+    req.decoded = { email: session.user.email }; 
+    req.session = session.session;
+
     next();
   } catch (err) {
     return res.status(401).json({ message: "Unauthorized: Invalid or expired token." });
   }
 };
 
-// Verify user role against allowed roles from DB
 const verifyRole = (allowedRoles) => {
   return async (req, res, next) => {
     try {

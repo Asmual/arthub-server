@@ -1,3 +1,4 @@
+// routes/paymentRoutes.js
 const express = require("express");
 const router = express.Router();
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
@@ -9,6 +10,28 @@ const orderModule = require("../models/Order");
 const prepareOrderData = typeof orderModule === "function"
   ? orderModule
   : (orderModule.prepareOrderData || orderModule.default);
+
+// -------------------------------------------------------------------------
+// GET: Fetch payment history for a specific buyer user
+// Route resolves to: GET /api/payment/history/:userId
+// -------------------------------------------------------------------------
+router.get("/history/:userId", verifyToken, async (req, res) => {
+  try {
+    const db = req.app.get("db");
+    const { userId } = req.params;
+
+    // Fetch orders matching buyerId or buyer identity context
+    const orders = await db.collection("orders")
+      .find({ buyerId: userId })
+      .sort({ _id: -1 })
+      .toArray();
+
+    return res.status(200).json(orders);
+  } catch (error) {
+    console.error("Payment History Fetch Failure:", error.message);
+    return res.status(500).json({ success: false, message: "Internal server error retrieving history." });
+  }
+});
 
 // -------------------------------------------------------------------------
 // GET: Fetch all checkout orders from 'orders' collection (Admin Access Only)
@@ -91,8 +114,8 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
           quantity: 1,
         },
       ],
-      success_url: `${clientBaseUrl}/dashboard/user?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${clientBaseUrl}/artwork/${artworkId}`,
+      success_url: `${clientBaseUrl}/browse/user?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${clientBaseUrl}/browse/${artworkId}`,
       metadata: {
         artworkId: artworkId.toString(),
         buyerEmail: userEmail,
