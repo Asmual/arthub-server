@@ -1,4 +1,3 @@
-// routes/adminRoutes.js
 const express = require("express");
 const router = express.Router();
 const { ObjectId } = require("mongodb");
@@ -12,18 +11,20 @@ const toOid = (id) => {
   }
 };
 
+// BetterAuth মিডলওয়্যার ব্যবহার (নিশ্চিত করুন আপনার middlewares.js-এ এটি আপডেট করা আছে)
 router.use(verifyToken);
 router.use(verifyRole(["admin"]));
 
-/* ===========================
-   USERS MANAGEMENT
-=========================== */
+/* =========================================================================
+   USERS MANAGEMENT (ADMIN ONLY)
+========================================================================= */
 
 // GET ALL USERS
 router.get("/users", async (req, res) => {
   try {
     const db = req.app.get("db");
 
+    // BetterAuth কালেকশন স্ট্রাকচার অনুযায়ী পাসওয়ার্ড ফিল্ড বাদ দিয়ে ইউজারদের খোঁজা হচ্ছে
     const users = await db
       .collection("user")
       .find({}, { projection: { password: 0, hashedPassword: 0 } })
@@ -46,11 +47,8 @@ router.patch("/users/:id/role", async (req, res) => {
     const { role } = req.body;
 
     const allowedRoles = ["user", "artist", "admin"];
-
     if (!allowedRoles.includes(role)) {
-      return res.status(400).json({
-        message: "Invalid role",
-      });
+      return res.status(400).json({ message: "Invalid role" });
     }
 
     const result = await db.collection("user").findOneAndUpdate(
@@ -63,9 +61,7 @@ router.patch("/users/:id/role", async (req, res) => {
           updatedAt: new Date(),
         },
       },
-      {
-        returnDocument: "after",
-      }
+      { returnDocument: "after" }
     );
 
     const updatedUser = result && result.value ? result.value : result;
@@ -89,14 +85,10 @@ router.delete("/users/:id", async (req, res) => {
     });
 
     if (result.deletedCount === 0) {
-      return res.status(404).json({
-        message: "User not found",
-      });
+      return res.status(404).json({ message: "User not found" });
     }
 
-    res.status(200).json({
-      message: "User deleted successfully",
-    });
+    res.status(200).json({ message: "User deleted successfully" });
   } catch (err) {
     res.status(500).json({
       message: "Failed to delete user",
@@ -105,15 +97,14 @@ router.delete("/users/:id", async (req, res) => {
   }
 });
 
-/* ===========================
+/* =========================================================================
    ARTWORK MANAGEMENT
-=========================== */
+========================================================================= */
 
 // GET ALL ARTWORKS
 router.get("/artworks", async (req, res) => {
   try {
     const db = req.app.get("db");
-
     const artworks = await db
       .collection("artworks")
       .find({})
@@ -135,19 +126,13 @@ router.delete("/artworks/:id", async (req, res) => {
     const db = req.app.get("db");
     const oid = toOid(req.params.id);
 
-    const result = await db.collection("artworks").deleteOne({
-      _id: oid,
-    });
+    const result = await db.collection("artworks").deleteOne({ _id: oid });
 
     if (result.deletedCount === 0) {
-      return res.status(404).json({
-        message: "Artwork not found",
-      });
+      return res.status(404).json({ message: "Artwork not found" });
     }
 
-    res.status(200).json({
-      message: "Artwork deleted successfully",
-    });
+    res.status(200).json({ message: "Artwork deleted successfully" });
   } catch (err) {
     res.status(500).json({
       message: "Failed to delete artwork",
@@ -156,39 +141,26 @@ router.delete("/artworks/:id", async (req, res) => {
   }
 });
 
-/* ===========================
+/* =========================================================================
    ANALYTICS & DASHBOARD STATS
-=========================== */
+========================================================================= */
 
 // OVERVIEW ANALYTICS
 router.get("/analytics", async (req, res) => {
   try {
     const db = req.app.get("db");
 
-    const [
-      totalUsers,
-      totalArtists,
-      totalArtworks,
-      revenueData,
-    ] = await Promise.all([
-      db.collection("user").countDocuments({
-        role: { $in: ["user", "buyer"] },
-      }),
-      db.collection("user").countDocuments({
-        role: "artist",
-      }),
+    const [totalUsers, totalArtists, totalArtworks, revenueData] = await Promise.all([
+      db.collection("user").countDocuments({ role: { $in: ["user", "buyer"] } }),
+      db.collection("user").countDocuments({ role: "artist" }),
       db.collection("artworks").countDocuments(),
       db.collection("orders")
         .aggregate([
           {
             $group: {
               _id: null,
-              totalRevenue: {
-                $sum: { $ifNull: ["$amount", "$price"] },
-              },
-              totalSales: {
-                $sum: 1,
-              },
+              totalRevenue: { $sum: { $ifNull: ["$amount", "$price"] } },
+              totalSales: { $sum: 1 },
             },
           },
         ])
@@ -216,18 +188,11 @@ router.get("/analytics", async (req, res) => {
 router.get("/dashboard-stats", async (req, res) => {
   try {
     const db = req.app.get("db");
-    
     if (!db) {
       return res.status(500).json({ message: "Database context connection lost." });
     }
 
-    const [
-      totalUsers,
-      verifiedArtworks,
-      transactionsCount,
-      revenueResult,
-      recentSales,
-    ] = await Promise.all([
+    const [totalUsers, verifiedArtworks, transactionsCount, revenueResult, recentSales] = await Promise.all([
       db.collection("user").countDocuments(),
       db.collection("artworks").countDocuments(),
       db.collection("orders").countDocuments(),
@@ -236,18 +201,12 @@ router.get("/dashboard-stats", async (req, res) => {
           {
             $group: {
               _id: null,
-              totalRevenue: {
-                $sum: { $ifNull: ["$amount", "$price"] },
-              },
+              totalRevenue: { $sum: { $ifNull: ["$amount", "$price"] } },
             },
           },
         ])
         .toArray(),
-      db.collection("orders")
-        .find({})
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .toArray(),
+      db.collection("orders").find({}).sort({ createdAt: -1 }).limit(5).toArray(),
     ]);
 
     res.status(200).json({
@@ -265,34 +224,21 @@ router.get("/dashboard-stats", async (req, res) => {
   }
 });
 
-/* ===========================
-   SALES CHART
-=========================== */
-
+// SALES CHART
 router.get("/analytics/sales-chart", async (req, res) => {
   try {
     const db = req.app.get("db");
-
     const chartData = await db
       .collection("orders")
       .aggregate([
         {
           $group: {
-            _id: {
-              $dateToString: {
-                format: "%Y-%m",
-                date: "$createdAt",
-              },
-            },
+            _id: { $dateToString: { format: "%Y-%m", date: "$createdAt" } },
             sales: { $sum: 1 },
-            revenue: {
-              $sum: { $ifNull: ["$amount", "$price"] },
-            },
+            revenue: { $sum: { $ifNull: ["$amount", "$price"] } },
           },
         },
-        {
-          $sort: { _id: 1 },
-        },
+        { $sort: { _id: 1 } },
       ])
       .toArray();
 
@@ -305,14 +251,10 @@ router.get("/analytics/sales-chart", async (req, res) => {
   }
 });
 
-/* ===========================
-   PIE CHART CATEGORY DATA
-=========================== */
-
+// PIE CHART CATEGORY DATA
 router.get("/analytics/categories", async (req, res) => {
   try {
     const db = req.app.get("db");
-
     const categoryData = await db
       .collection("artworks")
       .aggregate([
@@ -322,9 +264,7 @@ router.get("/analytics/categories", async (req, res) => {
             count: { $sum: 1 },
           },
         },
-        {
-          $sort: { count: -1 },
-        },
+        { $sort: { count: -1 } },
       ])
       .toArray();
 

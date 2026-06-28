@@ -1,60 +1,31 @@
-// routes/paymentRoutes.js
 const express = require("express");
 const router = express.Router();
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { ObjectId } = require("mongodb");
 const { verifyToken } = require("../middlewares");
 
-// Safe Import Handling: Supports both object destructuring and raw fallback imports
 const orderModule = require("../models/Order");
 const prepareOrderData = typeof orderModule === "function"
   ? orderModule
   : (orderModule.prepareOrderData || orderModule.default);
 
-// -------------------------------------------------------------------------
-// GET: Fetch payment history for a specific buyer user
-// Route resolves to: GET /api/payment/history/:userId
-// -------------------------------------------------------------------------
-router.get("/history/:userId", verifyToken, async (req, res) => {
-  try {
-    const db = req.app.get("db");
-    const { userId } = req.params;
-
-    // Fetch orders matching buyerId or buyer identity context
-    const orders = await db.collection("orders")
-      .find({ buyerId: userId })
-      .sort({ _id: -1 })
-      .toArray();
-
-    return res.status(200).json(orders);
-  } catch (error) {
-    console.error("Payment History Fetch Failure:", error.message);
-    return res.status(500).json({ success: false, message: "Internal server error retrieving history." });
-  }
-});
-
-// -------------------------------------------------------------------------
-// GET: Fetch all checkout orders from 'orders' collection (Admin Access Only)
-// Route resolves to: GET /api/payment/all-transactions
-// -------------------------------------------------------------------------
+// FETCH ALL TRANSACTIONS (ADMIN ACCESS ONLY)
 router.get("/all-transactions", verifyToken, async (req, res) => {
   try {
     const db = req.app.get("db");
     
-    // Fallback chain to catch email from any token context or raw header safely
-    const userEmail = req.user?.email || req.decoded?.email || req.headers.email;
+    // BetterAuth মিডলওয়্যার থেকে সরাসরি ইমেইল নেওয়া হচ্ছে
+    const userEmail = req.user?.email;
 
     if (!userEmail) {
       return res.status(401).json({ success: false, message: "Unauthorized. User identity context missing." });
     }
 
-    // Validate if requesting entity holds administrative clearance
     const requestingUser = await db.collection("user").findOne({ email: userEmail });
     if (!requestingUser || requestingUser.role !== "admin") {
       return res.status(403).json({ success: false, message: "Forbidden. Administrative privileges required." });
     }
 
-    // Fetch transactions sorted from newest to oldest
     const transactions = await db.collection("orders")
       .find({})
       .sort({ _id: -1 })
@@ -67,15 +38,12 @@ router.get("/all-transactions", verifyToken, async (req, res) => {
   }
 });
 
-// -------------------------------------------------------------------------
-// POST: Initialize Stripe Dynamic Checkout Session Safely
-// Route resolves to: POST /api/payment/create-checkout-session
-// -------------------------------------------------------------------------
+// INITIALIZE STRIPE DYNAMIC CHECKOUT SESSION
 router.post("/create-checkout-session", verifyToken, async (req, res) => {
   try {
     const db = req.app.get("db");
     const { artworkId, price } = req.body;
-    const userEmail = req.headers.email || req.headers["user-email"] || req.body.userEmail || req.user?.email;
+    const userEmail = req.user?.email || req.body.userEmail;
 
     if (!userEmail) {
       return res.status(400).json({ success: false, message: "User email tracking context missing." });
@@ -114,8 +82,8 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
           quantity: 1,
         },
       ],
-      success_url: `${clientBaseUrl}/browse/user?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${clientBaseUrl}/browse/${artworkId}`,
+      success_url: `${clientBaseUrl}/dashboard/user?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${clientBaseUrl}/artwork/${artworkId}`,
       metadata: {
         artworkId: artworkId.toString(),
         buyerEmail: userEmail,
@@ -130,23 +98,18 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
   }
 });
 
-// -------------------------------------------------------------------------
-// POST: Standardized verification endpoint syncing successful Stripe sessions
-// Route resolves to: POST /api/payment/verify-payment-sync
-// -------------------------------------------------------------------------
+// VERIFY PAYMENT SYNC AFTER SUCCESSFUL CHECKOUT
 router.post("/verify-payment-sync", verifyToken, async (req, res) => {
   const { sessionId } = req.body;
   try {
     const db = req.app.get("db");
-   
     const session = await stripe.checkout.sessions.retrieve(sessionId);
    
     if (session.payment_status !== "paid") {
       return res.status(400).json({ success: false, message: "Unverified transaction clearance profile." });
     }
 
-    const { artworkId, buyerEmail, artistEmail } = session.metadata;
-
+    const { artworkId, buyerEmail } = session.metadata;
     const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(artworkId) });
 
     await db.collection("artworks").updateOne(
@@ -183,10 +146,7 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
   }
 });
 
-// -------------------------------------------------------------------------
-// POST: Stripe Webhook Listener (Handles direct events from Stripe)
-// Route resolves to: POST /api/payment/webhook
-// -------------------------------------------------------------------------
+// STRIPE WEBHOOK LISTENER (পাবলিক রাউট, এতে মিডলওয়্যার থাকে না)
 router.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
@@ -205,20 +165,16 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
 
     try {
       const { artworkId, buyerEmail } = session.metadata;
-
-      // 1. Check if the order already exists to prevent duplication
       const existingOrder = await db.collection("orders").findOne({ transactionId: session.id });
      
       if (!existingOrder) {
         const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(artworkId) });
 
-        // 2. Mark artwork as sold
         await db.collection("artworks").updateOne(
           { _id: new ObjectId(artworkId) },
           { $set: { status: "Sold", isPublished: false } }
         );
 
-        // 3. Format and insert data into orders collection
         const structuredOrderPayload = prepareOrderData({
           artworkId: artworkId,
           artworkTitle: artwork ? artwork.title : "Original Gallery Artwork",
@@ -232,7 +188,6 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
 
         await db.collection("orders").insertOne(structuredOrderPayload);
 
-        // 4. Update buyer purchase count
         await db.collection("user").updateOne(
           { email: buyerEmail },
           { $inc: { purchasesCount: 1 } }

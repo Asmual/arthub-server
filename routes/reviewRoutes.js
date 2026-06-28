@@ -1,9 +1,12 @@
-// routes/reviewRoutes.js
 const express = require("express");
 const router  = express.Router();
 const { ObjectId } = require("mongodb");
 
-// POST /api/reviews
+const toOid = (id) => {
+  try { return ObjectId.isValid(id) ? new ObjectId(id) : null; } catch { return null; }
+};
+
+// POST /api/reviews - Add a standalone catalog product interaction feedback
 router.post("/", async (req, res) => {
   try {
     const db = req.app.get("db");
@@ -28,7 +31,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// GET /api/reviews/:artworkId
+// GET /api/reviews/:artworkId - Retrieve linear reviews feed list
 router.get("/:artworkId", async (req, res) => {
   try {
     const db = req.app.get("db");
@@ -42,35 +45,37 @@ router.get("/:artworkId", async (req, res) => {
   }
 });
 
-// PUT /api/reviews/:id — owner only (matched by userEmail)
+// PUT /api/reviews/:id - Mutate feedback contents filtered strictly by ownership email
 router.put("/:id", async (req, res) => {
   try {
     const db  = req.app.get("db");
     const { text, userEmail } = req.body;
+    const oid = toOid(req.params.id);
+
+    if (!oid) return res.status(400).json({ message: "Invalid Review ID" });
+
     const result = await db.collection("reviews").updateOne(
-      { _id: new ObjectId(req.params.id), userEmail },
+      { _id: oid, userEmail },
       { $set: { text: text.trim(), updatedAt: new Date() } }
     );
-    if (result.matchedCount === 0) {
-      return res.status(403).json({ message: "Not found or unauthorized" });
-    }
+    if (result.matchedCount === 0) return res.status(403).json({ message: "Not found or unauthorized" });
     res.json({ message: "Review updated" });
   } catch (err) {
     res.status(500).json({ message: "Failed to update review", error: err.message });
   }
 });
 
-// DELETE /api/reviews/:id — owner only
+// DELETE /api/reviews/:id - Secure data entity drop strictly by ownership check
 router.delete("/:id", async (req, res) => {
   try {
     const db  = req.app.get("db");
     const { userEmail } = req.body;
-    const result = await db.collection("reviews").deleteOne({
-      _id: new ObjectId(req.params.id), userEmail,
-    });
-    if (result.deletedCount === 0) {
-      return res.status(403).json({ message: "Not found or unauthorized" });
-    }
+    const oid = toOid(req.params.id);
+
+    if (!oid) return res.status(400).json({ message: "Invalid Review ID" });
+
+    const result = await db.collection("reviews").deleteOne({ _id: oid, userEmail });
+    if (result.deletedCount === 0) return res.status(403).json({ message: "Not found or unauthorized" });
     res.json({ message: "Review deleted" });
   } catch (err) {
     res.status(500).json({ message: "Failed to delete review", error: err.message });

@@ -1,38 +1,32 @@
-// middlewares.js
-// const { auth } = require("./auth"); // Make sure this points correctly to your BetterAuth configuration file
-const { ObjectId } = require("mongodb");
-
 const verifyToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({ message: "Unauthorized: No token provided." });
     }
 
     const token = authHeader.split(" ")[1];
-    console.log("Incoming Token:", token);
+    const db = req.app.get("db");
 
-    // Verify the BetterAuth session using the session token directly
-    const session = await auth.api.getSession({
-      headers: {
-        authorization: `Bearer ${token}`
-      }
-    });
-    console.log("Resolved Session:", session);
-
-    if (!session || !session.user) {
+    // Query the session collection directly using the real BetterAuth session token
+    const sessionDoc = await db.collection("session").findOne({ token });
+    if (!sessionDoc || new Date(sessionDoc.expiresAt) < new Date()) {
       return res.status(401).json({ message: "Unauthorized: Invalid or expired token." });
     }
 
-    // Attach user information to the request object
-    req.user = session.user;
-    req.decoded = { email: session.user.email }; 
-    req.session = session.session;
+    // Fetch associated user context from database
+    const userDoc = await db.collection("user").findOne({ id: sessionDoc.userId });
+    if (!userDoc) {
+      return res.status(401).json({ message: "Unauthorized: Session user not found." });
+    }
 
+    // Attach user profile info to the request object
+    req.user = { id: userDoc.id, email: userDoc.email, role: userDoc.role };
+    req.decoded = req.user;
+    
     next();
   } catch (err) {
-    return res.status(401).json({ message: "Unauthorized: Invalid or expired token." });
+    return res.status(401).json({ message: "Unauthorized: Token verification failed." });
   }
 };
 
@@ -47,7 +41,6 @@ const verifyRole = (allowedRoles) => {
       }
 
       const user = await db.collection("user").findOne({ email: userEmail });
-
       if (!user) {
         return res.status(404).json({ success: false, message: "User not found in database." });
       }
