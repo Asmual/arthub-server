@@ -41,7 +41,7 @@ router.get("/featured", async (req, res) => {
 router.get("/", async (req, res) => {
   try {
     const artworkCollection = getArtworkCollection(req);
-    let { search, category, artistId, minPrice, maxPrice, sort, page = 1, limit = 12 } = req.query;
+    let { search, category, artistId, email, minPrice, maxPrice, sort, page = 1, limit = 12 } = req.query;
 
     const finalFilter = {};
 
@@ -52,6 +52,11 @@ router.get("/", async (req, res) => {
 
     if (category?.trim() && category !== "undefined" && category !== "all") {
       finalFilter.category = { $regex: category.trim(), $options: "i" };
+    }
+
+    // Support direct filtering by artist email query context
+    if (email?.trim() && email !== "undefined") {
+      finalFilter.artistEmail = email.trim();
     }
 
     if (artistId && artistId !== "undefined") {
