@@ -3,32 +3,26 @@ const router = express.Router();
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { ObjectId } = require("mongodb");
 const { verifyToken } = require("../middlewares");
+const { getUserCollection, getArtworkCollection, getOrderCollection } = require("../models/collections");
 
-const orderModule = require("../models/Order");
-const prepareOrderData = typeof orderModule === "function"
-  ? orderModule
-  : (orderModule.prepareOrderData || orderModule.default);
-
-// FETCH ALL TRANSACTIONS (ADMIN ACCESS ONLY)
+/**
+ * @route   GET /api/payment/all-transactions
+ * @desc    Fetch comprehensive global transaction history records
+ * @access  Private (JWT + Admin Role Authorization Check via Pipeline Guard)
+ */
 router.get("/all-transactions", verifyToken, async (req, res) => {
   try {
-    const db = req.app.get("db");
+    const orderCollection = getOrderCollection(req);
+    const userCollection = getUserCollection(req);
     
-    // BetterAuth মিডলওয়্যার থেকে সরাসরি ইমেইল নেওয়া হচ্ছে
-    const userEmail = req.user?.email;
-
-    if (!userEmail) {
-      return res.status(401).json({ success: false, message: "Unauthorized. User identity context missing." });
+    const operationalProfile = await userCollection.findOne({ email: req.user.email });
+    if (!operationalProfile || operationalProfile.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Forbidden: Administrative credentials mandatory." });
     }
 
-    const requestingUser = await db.collection("user").findOne({ email: userEmail });
-    if (!requestingUser || requestingUser.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Forbidden. Administrative privileges required." });
-    }
-
-    const transactions = await db.collection("orders")
+    const transactions = await orderCollection
       .find({})
-      .sort({ _id: -1 })
+      .sort({ date: -1 })
       .toArray();
 
     return res.status(200).json(transactions);
@@ -38,28 +32,29 @@ router.get("/all-transactions", verifyToken, async (req, res) => {
   }
 });
 
-// INITIALIZE STRIPE DYNAMIC CHECKOUT SESSION
+/**
+ * @route   POST /api/payment/create-checkout-session
+ * @desc    Initialize Stripe Dynamic Gateway checkout interface mapping session metadata payload
+ * @access  Private (JWT Required)
+ */
 router.post("/create-checkout-session", verifyToken, async (req, res) => {
   try {
-    const db = req.app.get("db");
+    const artworkCollection = getArtworkCollection(req);
     const { artworkId, price } = req.body;
-    const userEmail = req.user?.email || req.body.userEmail;
-
-    if (!userEmail) {
-      return res.status(400).json({ success: false, message: "User email tracking context missing." });
-    }
+    const userEmail = req.user.email;
+    const buyerId = req.user.id; // Secure extraction from signed application JWT identity token
 
     if (!artworkId || !ObjectId.isValid(artworkId)) {
-      return res.status(400).json({ success: false, message: "Invalid artwork reference identifier." });
+      return res.status(400).json({ success: false, message: "Invalid artwork reference identifier target." });
     }
 
-    const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(artworkId) });
+    const artwork = await artworkCollection.findOne({ _id: new ObjectId(artworkId) });
     if (!artwork) {
-      return res.status(404).json({ success: false, message: "Requested artwork missing from database." });
+      return res.status(404).json({ success: false, message: "Requested artwork missing from marketplace inventory." });
     }
    
-    if (artwork.status === "Sold" || artwork.isSold) {
-      return res.status(400).json({ success: false, message: "Transaction blocked. Artwork already sold." });
+    if (artwork.isSold === true) {
+      return res.status(400).json({ success: false, message: "Transaction blocked: Artwork asset state is already set to Sold." });
     }
 
     const clientBaseUrl = process.env.CLIENT_URL || "http://localhost:3000";
@@ -73,9 +68,9 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
           price_data: {
             currency: "usd",
             product_data: {
-              name: artwork.title || "Original Artwork",
+              name: artwork.title || "Original Artwork Blueprint",
               images: artwork.image ? [artwork.image] : [],
-              description: `Original Artwork Purchase from ArtHub Marketplace`,
+              description: `Original Masterpiece processing map via ArtHub Network`,
             },
             unit_amount: Math.round(Number(price || artwork.price) * 100),
           },
@@ -86,68 +81,85 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
       cancel_url: `${clientBaseUrl}/artwork/${artworkId}`,
       metadata: {
         artworkId: artworkId.toString(),
+        buyerId: buyerId, // MUST store application native MongoDB User ID configuration index
         buyerEmail: userEmail,
-        artistEmail: artwork.artistEmail || artwork.userEmail || ""
+        artworkTitle: artwork.title || "Original Gallery Artwork",
+        artistEmail: artwork.artistEmail || ""
       }
     });
 
     return res.status(200).json({ success: true, url: session.url });
   } catch (error) {
     console.error("Stripe Session Creation Failure:", error.message);
-    return res.status(500).json({ success: false, message: "System gateway failed to initialize.", error: error.message });
+    return res.status(500).json({ success: false, message: "System core failed to securely construct checkout pipe session orchestration maps.", error: error.message });
   }
 });
 
-// VERIFY PAYMENT SYNC AFTER SUCCESSFUL CHECKOUT
+/**
+ * @route   POST /api/payment/verify-payment-sync
+ * @desc    Perform synchronous data validations post-redirection flow for client performance guarantees
+ * @access  Private (JWT Required)
+ */
 router.post("/verify-payment-sync", verifyToken, async (req, res) => {
   const { sessionId } = req.body;
   try {
-    const db = req.app.get("db");
+    const artworkCollection = getArtworkCollection(req);
+    const orderCollection = getOrderCollection(req);
+    const userCollection = getUserCollection(req);
+
     const session = await stripe.checkout.sessions.retrieve(sessionId);
    
     if (session.payment_status !== "paid") {
-      return res.status(400).json({ success: false, message: "Unverified transaction clearance profile." });
+      return res.status(400).json({ success: false, message: "Unverified transaction settlement clearance profile tracked." });
     }
 
-    const { artworkId, buyerEmail } = session.metadata;
-    const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(artworkId) });
+    const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata;
 
-    await db.collection("artworks").updateOne(
+    // Deduplicate transaction insertion routines
+    const existingOrder = await orderCollection.findOne({ transactionId: session.id });
+    if (existingOrder) {
+      return res.status(200).json({ success: true, message: "Transaction maps already fully initialized and integrated inside database storage systems." });
+    }
+
+    // Flag artwork data object parameters out of public scope listings directly inside singular collection
+    await artworkCollection.updateOne(
       { _id: new ObjectId(artworkId) },
-      { $set: { status: "Sold", isPublished: false } }
+      { $set: { isSold: true } }
     );
 
-    if (typeof prepareOrderData !== "function") {
-      throw new Error("System runtime failure: prepareOrderData compilation target is not available.");
-    }
-
-    const structuredOrderPayload = prepareOrderData({
-      artworkId: artworkId,
-      artworkTitle: artwork ? artwork.title : "Original Gallery Artwork",
-      buyerId: session.customer || `cust_${new ObjectId().toString()}`,
-      buyerEmail: buyerEmail || session.customer_details?.email,
-      price: session.amount_total / 100,
+    const structuredOrderPayload = {
       transactionId: session.id,
       type: "purchase",
-      status: "paid"
-    });
+      artworkId: new ObjectId(artworkId),
+      artworkTitle: artworkTitle,
+      buyerId: buyerId, // Linked to MongoDB source of truth document configuration profile ID string
+      buyerEmail: buyerEmail,
+      artistEmail: artistEmail,
+      amount: session.amount_total / 100,
+      date: new Date()
+    };
 
-    await db.collection("orders").insertOne(structuredOrderPayload);
+    await orderCollection.insertOne(structuredOrderPayload);
 
-    await db.collection("user").updateOne(
+    // Dynamic increment execution paths for user purchase profiles
+    await userCollection.updateOne(
       { email: buyerEmail },
       { $inc: { purchasesCount: 1 } }
     );
 
-    return res.status(200).json({ success: true, message: "Stripe data mapped to orders collection successfully." });
+    return res.status(200).json({ success: true, message: "Stripe data metrics successfully integrated into application structural storage engines." });
   } catch (error) {
     console.error("Order Insertion Runtime Failure:", error.message);
-    return res.status(500).json({ success: false, message: "Database ledger tracking failure.", error: error.message });
+    return res.status(500).json({ success: false, message: "Database ledger tracking failure mapping transaction paths.", error: error.message });
   }
 });
 
-// STRIPE WEBHOOK LISTENER (পাবলিক রাউট, এতে মিডলওয়্যার থাকে না)
-router.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+/**
+ * @route   POST /api/payment/webhook
+ * @desc    Asynchronous operational failsafe handler dealing directly with raw system signals emitted from Stripe servers
+ * @access  Public Gateway Configuration (Middleware Exclusion Rule Target)
+ */
+router.post("/webhook", async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
 
@@ -156,48 +168,50 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
     event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
   } catch (err) {
     console.error("Webhook Signature Verification Failed:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return res.status(400).send(`Webhook Error Integration Failure Sequence: ${err.message}`);
   }
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
-    const db = req.app.get("db");
+    const artworkCollection = getArtworkCollection(req);
+    const orderCollection = getOrderCollection(req);
+    const userCollection = getUserCollection(req);
 
     try {
-      const { artworkId, buyerEmail } = session.metadata;
-      const existingOrder = await db.collection("orders").findOne({ transactionId: session.id });
+      const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata;
+      const existingOrder = await orderCollection.findOne({ transactionId: session.id });
      
       if (!existingOrder) {
-        const artwork = await db.collection("artworks").findOne({ _id: new ObjectId(artworkId) });
-
-        await db.collection("artworks").updateOne(
+        // Enforce inventory data state validation adjustments inside production database instances
+        await artworkCollection.updateOne(
           { _id: new ObjectId(artworkId) },
-          { $set: { status: "Sold", isPublished: false } }
+          { $set: { isSold: true } }
         );
 
-        const structuredOrderPayload = prepareOrderData({
-          artworkId: artworkId,
-          artworkTitle: artwork ? artwork.title : "Original Gallery Artwork",
-          buyerId: session.customer || `cust_${new ObjectId().toString()}`,
-          buyerEmail: buyerEmail || session.customer_details?.email,
-          price: session.amount_total / 100,
+        const structuredOrderPayload = {
           transactionId: session.id,
           type: "purchase",
-          status: "paid"
-        });
+          artworkId: new ObjectId(artworkId),
+          artworkTitle: artworkTitle,
+          buyerId: buyerId,
+          buyerEmail: buyerEmail,
+          artistEmail: artistEmail,
+          amount: session.amount_total / 100,
+          date: new Date()
+        };
 
-        await db.collection("orders").insertOne(structuredOrderPayload);
+        await orderCollection.insertOne(structuredOrderPayload);
 
-        await db.collection("user").updateOne(
+        await userCollection.updateOne(
           { email: buyerEmail },
           { $inc: { purchasesCount: 1 } }
         );
 
-        console.log(`Webhook Success: Order successfully saved for session ${session.id}`);
+        console.log(`Webhook Operational Broadcast Success: Order successfully tracked for transaction lifecycle index allocation ${session.id}`);
       }
     } catch (error) {
-      console.error("Webhook Database Error:", error.message);
-      return res.status(500).json({ message: "Internal server error during database update." });
+      console.error("Webhook Database Integration Pipeline Crash:", error.message);
+      return res.status(500).json({ message: "Internal pipeline serialization architecture error caught during live operational state mutation." });
     }
   }
 

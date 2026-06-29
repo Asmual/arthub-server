@@ -1,8 +1,10 @@
+// index.js
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 const connectDB = require("./config/db");
 
+// Core router configurations pipeline mapping
 const artistRoutes = require("./routes/artistRoutes");
 const artworkRoutes = require("./routes/artworkRoutes");
 const reviewRoutes = require("./routes/reviewRoutes");
@@ -18,13 +20,14 @@ const allowedOrigins = [
   "https://arthub-three.vercel.app",
 ];
 
+// Configure Cross-Origin Resource Sharing protocols
 app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-      callback(new Error("Not allowed by CORS"));
+      callback(new Error("Not allowed by CORS cross-origin configuration framework"));
     },
     credentials: true,
   })
@@ -33,23 +36,24 @@ app.use(
 // CRITICAL: Stripe webhook requires raw body payload before express.json() parser
 app.use("/api/payment/webhook", express.raw({ type: "application/json" }));
 
-// Standard JSON parser for all other API endpoints
+// Standard JSON parser for all other incoming API operations
 app.use(express.json());
 
 async function startServer() {
   try {
+    // Await primary database thread mapping instantiation layer
     const db = await connectDB();
 
-    // Test the database connection
+    // Default target probe validation landing page
     app.get("/", (req, res) => {
-      res.send("ArtHub Server running with Database Connected.");
+      res.send("ArtHub Server running with Database Connected via Hybrid Security Blueprint.");
     });
 
-    // Share database instance across route handlers using app.set
+    // Share database instance across route handlers using native Express allocation engine
     app.set("db", db);
     console.log("MongoDB Connection Successful!");
 
-    // Main API Route Handlers
+    // Central Application API Route Registrations
     app.use("/api/artists", artistRoutes);
     app.use("/api/artworks", artworkRoutes);
     app.use("/api/reviews", reviewRoutes);
@@ -57,22 +61,23 @@ async function startServer() {
     app.use("/api/users", userRoutes);
     app.use("/api/admin", adminRoutes);
     
-    // Global Centralized Error Handling Middleware
+    // Global Centralized Fail-Safe Exception Catchment Endpoint Setup
     app.use((err, req, res, next) => {
-      console.error("Global Error Caught:", err);
+      console.error("Global Infrastructure Error Caught:", err);
       res.status(500).json({
-        message: "Internal Server Error",
-        error: err.message,
+        error: true,
+        message: "Internal Platform Error Architecture Core Interrupted.",
+        details: err.message,
       });
     });
 
     app.listen(port, () => {
-      console.log(`Server running on port ${port}`);
-      console.log(`API Link: http://localhost:${port}`);
+      console.log(`Server executing successfully on runtime environment port ${port}`);
+      console.log(`Live API Routing Cluster: http://localhost:${port}`);
     });
 
   } catch (error) {
-    console.error("MongoDB connection or Server startup failed:", error);
+    console.error("Platform initialization protocol crash:", error);
     process.exit(1);
   }
 }

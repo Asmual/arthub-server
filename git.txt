@@ -8,5 +8,5 @@ git push -u origin main
 
 
 git add .
-git commit -m "update All Files"
+git commit -m "chore: optimize env structure and update server settings"
 git push

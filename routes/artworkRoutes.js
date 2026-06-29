@@ -1,29 +1,46 @@
 const express = require("express");
 const router = express.Router();
 const { ObjectId } = require("mongodb");
+const { verifyToken, verifyRole } = require("../middlewares");
+const { getArtworkCollection, getUserCollection, getCommentCollection, getOrderCollection } = require("../models/collections");
 
+/**
+ * Utility helper to safely cast string IDs to MongoDB ObjectIds
+ */
 const toOid = (id) => {
-  try { return ObjectId.isValid(id) ? new ObjectId(id) : null; } catch { return null; }
+  try {
+    return ObjectId.isValid(id) ? new ObjectId(id) : null;
+  } catch {
+    return null;
+  }
 };
 
-// GET /api/artworks/featured - Retrieve 6 random unsold items for dynamic homepage feed
+/**
+ * @route   GET /api/artworks/featured
+ * @desc    Retrieve 6 random unsold items for dynamic homepage feed
+ * @access  Public
+ */
 router.get("/featured", async (req, res) => {
   try {
-    const db = req.app.get("db");
-    const artworks = await db.collection("artworks").aggregate([
+    const artworkCollection = getArtworkCollection(req);
+    const artworks = await artworkCollection.aggregate([
       { $match: { isSold: { $ne: true }, isDraft: { $ne: true } } },
       { $sample: { size: 6 } },
     ]).toArray();
     res.json(artworks);
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch featured artworks", error: err.message });
+    res.status(500).json({ error: true, message: "Failed to fetch featured artworks.", details: err.message });
   }
 });
 
-// GET /api/artworks - Browse paginated catalog with comprehensive search query support
+/**
+ * @route   GET /api/artworks
+ * @desc    Browse paginated catalog with comprehensive search query support
+ * @access  Public
+ */
 router.get("/", async (req, res) => {
   try {
-    const db = req.app.get("db");
+    const artworkCollection = getArtworkCollection(req);
     let { search, category, artistId, minPrice, maxPrice, sort, page = 1, limit = 12 } = req.query;
 
     const finalFilter = {};
@@ -40,9 +57,12 @@ router.get("/", async (req, res) => {
     if (artistId && artistId !== "undefined") {
       const oid = toOid(artistId);
       finalFilter.$or = [
-        { userId: oid }, { userId: artistId },
-        { artistId: oid }, { artistId: artistId },
+        { userId: artistId },
+        { artistId: artistId }
       ];
+      if (oid) {
+        finalFilter.$or.push({ userId: oid }, { artistId: oid });
+      }
     }
 
     if ((minPrice && minPrice !== "undefined") || (maxPrice && maxPrice !== "undefined")) {
@@ -62,8 +82,8 @@ router.get("/", async (req, res) => {
     const currentLimit = Math.max(1, Number(limit));
     const skip = (currentPage - 1) * currentLimit;
 
-    const total = await db.collection("artworks").countDocuments(finalFilter);
-    const artworks = await db.collection("artworks")
+    const total = await artworkCollection.countDocuments(finalFilter);
+    const artworks = await artworkCollection
       .find(finalFilter)
       .sort(sortOpt)
       .skip(skip)
@@ -77,30 +97,34 @@ router.get("/", async (req, res) => {
       totalPages: Math.ceil(total / currentLimit),
     });
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch artworks", error: err.message });
+    res.status(500).json({ error: true, message: "Failed to fetch catalog artworks.", details: err.message });
   }
 });
 
-// GET /api/artworks/:id - Detailed profile lookup using aggregate join logic
+/**
+ * @route   GET /api/artworks/:id
+ * @desc    Detailed profile lookup using aggregate join logic from singular user collection
+ * @access  Public
+ */
 router.get("/:id", async (req, res) => {
   try {
-    const db = req.app.get("db");
+    const artworkCollection = getArtworkCollection(req);
     const oid = toOid(req.params.id);
 
     const artworkPipeline = [
       { $match: { $or: [{ _id: oid }, { _id: req.params.id }] } },
       {
         $lookup: {
-          from: "users",
+          from: "user",
           let: { artistIdentifier: "$userId" },
           pipeline: [
             {
               $match: {
                 $expr: {
                   $or: [
-                    { $eq: ["$_id", { $toObjectId: "$$artistIdentifier" }] },
                     { $eq: ["$_id", "$$artistIdentifier"] },
-                    { $eq: ["$uid", "$$artistIdentifier"] },
+                    { $eq: [{ $toString: "$_id" }, "$$artistIdentifier"] },
+                    { $eq: ["$id", "$$artistIdentifier"] }
                   ],
                 },
               },
@@ -113,191 +137,194 @@ router.get("/:id", async (req, res) => {
       { $project: { artistProfile: 0 } },
     ];
 
-    const results = await db.collection("artworks").aggregate(artworkPipeline).toArray();
-    if (!results || results.length === 0) return res.status(404).json({ message: "Artwork not found" });
+    const results = await artworkCollection.aggregate(artworkPipeline).toArray();
+    if (!results || results.length === 0) return res.status(404).json({ error: true, message: "Artwork item lookup profile missing." });
 
     const artwork = results[0];
     if (artwork.artistDetails) {
       artwork.artistName = artwork.artistDetails.name || artwork.artistName;
-      artwork.artistImage = artwork.artistDetails.photoURL || artwork.artistDetails.image || "";
+      artwork.artistImage = artwork.artistDetails.image || "";
     }
 
     res.json(artwork);
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch artwork", error: err.message });
+    res.status(500).json({ error: true, message: "Failed to fetch distinct artwork asset metrics.", details: err.message });
   }
 });
 
-// POST /api/artworks - Add a new single portfolio entry
-router.post("/", async (req, res) => {
+/**
+ * @route   POST /api/artworks
+ * @desc    Add a new single portfolio entry under structural sub-tier allocation limits
+ * @access  Private (JWT + Artist/Admin Role Guard Required)
+ */
+router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
   try {
-    const db = req.app.get("db");
-    const { title, description, price, category, image, userId, artistName } = req.body;
+    const artworkCollection = getArtworkCollection(req);
+    const userCollection = getUserCollection(req);
+    const { title, description, price, category, image } = req.body;
    
-    if (!title || !price || !image || !userId) {
-      return res.status(400).json({ message: "title, price, image, userId are required" });
+    if (!title || !price || !image) {
+      return res.status(400).json({ error: true, message: "Required payload matrix indices (title, price, image) missing." });
+    }
+
+    const artistProfile = await userCollection.findOne({ email: req.user.email });
+    if (!artistProfile) {
+      return res.status(404).json({ error: true, message: "Associated platform artist identity record missing." });
+    }
+
+    // Evaluate dynamic account capability parameters against inventory metrics
+    const currentTier = artistProfile.subscriptionTier || "free";
+    const totalExistingArtworks = await artworkCollection.countDocuments({ userId: req.user.id });
+
+    if (currentTier === "free" && totalExistingArtworks >= 3) {
+      return res.status(403).json({ error: true, message: "Tier limit exceeded. Free tier profiles are limited to 3 listings." });
+    }
+    if (currentTier === "pro" && totalExistingArtworks >= 9) {
+      return res.status(403).json({ error: true, message: "Tier limit exceeded. Pro tier profiles are limited to 9 listings." });
     }
    
     const doc = {
-      title, description, category, image,
+      title,
+      description: description || "",
+      category: category || "Uncategorized",
+      image,
       price: Number(price),
-      userId,
-      artistName: artistName || "",
+      userId: req.user.id,
+      artistEmail: req.user.email,
+      artistName: artistProfile.name || "Anonymous Artist",
       isSold: false,
       isDraft: false,
       createdAt: new Date(),
     };
    
-    const result = await db.collection("artworks").insertOne(doc);
-    res.status(201).json({ ...doc, _id: result.insertedId });
+    const result = await artworkCollection.insertOne(doc);
+    res.status(201).json({ success: true, ...doc, _id: result.insertedId });
   } catch (err) {
-    res.status(500).json({ message: "Failed to create artwork", error: err.message });
+    res.status(500).json({ error: true, message: "Failed to register portfolio artwork item entry.", details: err.message });
   }
 });
 
-// PUT /api/artworks/:id - Apply metadata property changes safely
-router.put("/:id", async (req, res) => {
+/**
+ * @route   PUT /api/artworks/:id
+ * @desc    Apply metadata property changes safely with ownership checking
+ * @access  Private (JWT + Artist/Admin Role Guard Required)
+ */
+router.put("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
   try {
-    const db = req.app.get("db");
+    const artworkCollection = getArtworkCollection(req);
     const oid = toOid(req.params.id);
     const { title, description, price, category, image } = req.body;
+
+    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
+    if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork listing profile target missing." });
+
+    // Enforce isolation ownership rule context
+    if (existingArtwork.userId !== req.user.id && req.user.role !== "admin") {
+      return res.status(403).json({ error: true, message: "Forbidden: Ownership mapping validation mismatch." });
+    }
    
-    const result = await db.collection("artworks").findOneAndUpdate(
-      { $or: [{ _id: oid }, { _id: req.params.id }] },
-      {
-        $set: {
-          title, description, category, image,
-          price: Number(price),
-          updatedAt: new Date(),
-        },
-      },
+    const updatePayload = {
+      updatedAt: new Date()
+    };
+    if (title !== undefined) updatePayload.title = title;
+    if (description !== undefined) updatePayload.description = description;
+    if (category !== undefined) updatePayload.category = category;
+    if (image !== undefined) updatePayload.image = image;
+    if (price !== undefined) updatePayload.price = Number(price);
+
+    const result = await artworkCollection.findOneAndUpdate(
+      { _id: existingArtwork._id },
+      { $set: updatePayload },
       { returnDocument: "after" }
     );
      
     const updatedDoc = result.value || result;
-    if (!updatedDoc) return res.status(404).json({ message: "Artwork not found" });
-    res.json(updatedDoc);
+    res.json({ success: true, data: updatedDoc });
   } catch (err) {
-    res.status(500).json({ message: "Failed to update artwork", error: err.message });
+    res.status(500).json({ error: true, message: "Failed to update catalog artwork metadata fields.", details: err.message });
   }
 });
 
-// DELETE /api/artworks/:id - Terminate standard catalog data entry
-router.delete("/:id", async (req, res) => {
+/**
+ * @route   DELETE /api/artworks/:id
+ * @desc    Terminate standard catalog data entry with strict access validation checks
+ * @access  Private (JWT + Artist/Admin Role Guard Required)
+ */
+router.delete("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
   try {
-    const db = req.app.get("db");
+    const artworkCollection = getArtworkCollection(req);
     const oid = toOid(req.params.id);
    
-    const result = await db.collection("artworks").deleteOne({
-      $or: [{ _id: oid }, { _id: req.params.id }],
-    });
-   
-    if (result.deletedCount === 0) return res.status(404).json({ message: "Artwork not found" });
-    res.json({ message: "Artwork deleted" });
+    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
+    if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork catalog item target missing." });
+
+    if (existingArtwork.userId !== req.user.id && req.user.role !== "admin") {
+      return res.status(403).json({ error: true, message: "Forbidden: Ownership profile verification barrier." });
+    }
+
+    await artworkCollection.deleteOne({ _id: existingArtwork._id });
+    res.json({ success: true, message: "Artwork deleted successfully from live index channels." });
   } catch (err) {
-    res.status(500).json({ message: "Failed to delete artwork", error: err.message });
+    res.status(500).json({ error: true, message: "Failed to terminate data footprint maps.", details: err.message });
   }
 });
 
-// GET /api/artworks/:id/comments - Query nested dynamic interactions feed
+/**
+ * @route   GET /api/artworks/:id/comments
+ * @desc    Query dynamic interactions feedback feed for single context entity
+ * @access  Public
+ */
 router.get("/:id/comments", async (req, res) => {
   try {
-    const db = req.app.get("db");
-    const comments = await db.collection("reviews")
+    const commentCollection = getCommentCollection(req);
+    const comments = await commentCollection
       .find({ artworkId: req.params.id })
       .sort({ createdAt: -1 })
       .toArray();
     res.json(comments);
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch comments", error: err.message });
+    res.status(500).json({ error: true, message: "Failed to compile linear item commentary streams.", details: err.message });
   }
 });
 
-// POST /api/artworks/:id/comments - Authenticated entry with order receipt validation
-router.post("/:id/comments", async (req, res) => {
+/**
+ * @route   POST /api/artworks/:id/comments
+ * @desc    Authenticated entry with order receipt verification validation
+ * @access  Private (JWT Required)
+ */
+router.post("/:id/comments", verifyToken, async (req, res) => {
   try {
-    const db = req.app.get("db");
-    const { userId, userEmail, userName, userImage, text } = req.body;
+    const commentCollection = getCommentCollection(req);
+    const orderCollection = getOrderCollection(req);
+    const { text } = req.body;
     const artworkId = req.params.id;
 
-    if (!userEmail || !text?.trim()) {
-      return res.status(400).json({ message: "userEmail and text are required" });
+    if (!text?.trim()) {
+      return res.status(400).json({ error: true, message: "Comment feedback core message body parameter required." });
     }
 
-    const purchased = await db.collection("orders").findOne({
-      artworkId: artworkId,
-      buyerEmail: userEmail,
-      status: "paid",
+    // Verify buyer transaction verification status prior to feedback ingestion loop processing
+    const purchased = await orderCollection.findOne({
+      artworkId: toOid(artworkId) || artworkId,
+      buyerEmail: req.user.email,
     });
    
-    if (!purchased) return res.status(403).json({ message: "Purchase this artwork to leave a comment" });
+    if (!purchased) {
+      return res.status(403).json({ error: true, message: "Transaction barrier: Verified asset purchase receipt verification required." });
+    }
 
     const doc = {
-      artworkId, userId, userEmail,
-      userName: userName || "User",
-      userImage: userImage || "",
+      artworkId,
+      userId: req.user.id,
+      userEmail: req.user.email,
       text: text.trim(),
       createdAt: new Date(),
     };
    
-    const result = await db.collection("reviews").insertOne(doc);
-    res.status(201).json({ ...doc, _id: result.insertedId });
+    const result = await commentCollection.insertOne(doc);
+    res.status(201).json({ success: true, ...doc, _id: result.insertedId });
   } catch (err) {
-    res.status(500).json({ message: "Failed to add comment", error: err.message });
-  }
-});
-
-// PUT /api/artworks/:id/comments/:commentId - Modify review body contents securely
-router.put("/:id/comments/:commentId", async (req, res) => {
-  try {
-    const db = req.app.get("db");
-    const oid = toOid(req.params.commentId);
-    const { text, userEmail } = req.body;
-   
-    const result = await db.collection("reviews").findOneAndUpdate(
-      { $or: [{ _id: oid }, { _id: req.params.commentId }], userEmail },
-      { $set: { text: text.trim(), updatedAt: new Date() } },
-      { returnDocument: "after" }
-    );
-     
-    const updatedDoc = result.value || result;
-    if (!updatedDoc) return res.status(404).json({ message: "Comment not found or unauthorized" });
-    res.json(updatedDoc);
-  } catch (err) {
-    res.status(500).json({ message: "Failed to update comment", error: err.message });
-  }
-});
-
-// DELETE /api/artworks/:id/comments/:commentId - Scope authorization checks before removal
-router.delete("/:id/comments/:commentId", async (req, res) => {
-  try {
-    const db = req.app.get("db");
-    const commentOid = toOid(req.params.commentId);
-    const artworkOid = toOid(req.params.id);
-    const { userEmail, userId } = req.body;
-
-    if (!userEmail && !userId) return res.status(400).json({ message: "User credentials are required" });
-
-    const comment = await db.collection("reviews").findOne({
-      $or: [{ _id: commentOid }, { _id: req.params.commentId }],
-    });
-    if (!comment) return res.status(404).json({ message: "Comment not found" });
-
-    const artwork = await db.collection("artworks").findOne({
-      $or: [{ _id: artworkOid }, { _id: req.params.id }],
-    });
-
-    const isCommentAuthor = (userEmail && comment.userEmail === userEmail) || (userId && comment.userId === userId);
-    const isArtworkOwner = artwork && ((userId && artwork.userId === userId) || (userId && artwork.artistId === userId));
-
-    if (!isCommentAuthor && !isArtworkOwner) {
-      return res.status(403).json({ message: "Unauthorized to delete this comment" });
-    }
-
-    await db.collection("reviews").deleteOne({ _id: comment._id });
-    res.json({ message: "Comment successfully deleted" });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to delete comment", error: err.message });
+    res.status(500).json({ error: true, message: "Failed to log commentary data node.", details: err.message });
   }
 });
 

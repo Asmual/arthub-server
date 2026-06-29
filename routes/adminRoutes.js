@@ -2,7 +2,11 @@ const express = require("express");
 const router = express.Router();
 const { ObjectId } = require("mongodb");
 const { verifyToken, verifyRole } = require("../middlewares.js");
+const { getUserCollection, getArtworkCollection, getOrderCollection } = require("../models/collections");
 
+/**
+ * Utility helper to safely cast string IDs to MongoDB ObjectIds
+ */
 const toOid = (id) => {
   try {
     return ObjectId.isValid(id) ? new ObjectId(id) : null;
@@ -11,7 +15,7 @@ const toOid = (id) => {
   }
 };
 
-// BetterAuth মিডলওয়্যার ব্যবহার (নিশ্চিত করুন আপনার middlewares.js-এ এটি আপডেট করা আছে)
+// Apply centralized structural middleware boundaries across all administrative router paths
 router.use(verifyToken);
 router.use(verifyRole(["admin"]));
 
@@ -19,48 +23,45 @@ router.use(verifyRole(["admin"]));
    USERS MANAGEMENT (ADMIN ONLY)
 ========================================================================= */
 
-// GET ALL USERS
+/**
+ * @route   GET /api/admin/users
+ * @desc    Fetch all registered application profiles excluding highly sensitive credential logs
+ */
 router.get("/users", async (req, res) => {
   try {
-    const db = req.app.get("db");
-
-    // BetterAuth কালেকশন স্ট্রাকচার অনুযায়ী পাসওয়ার্ড ফিল্ড বাদ দিয়ে ইউজারদের খোঁজা হচ্ছে
-    const users = await db
-      .collection("user")
+    const userCollection = getUserCollection(req);
+    const users = await userCollection
       .find({}, { projection: { password: 0, hashedPassword: 0 } })
       .toArray();
 
     res.status(200).json(users);
   } catch (err) {
     res.status(500).json({
-      message: "Failed to fetch users",
-      error: err.message,
+      error: true,
+      message: "Failed to fetch platform users.",
+      details: err.message,
     });
   }
 });
 
-// UPDATE USER ROLE
+/**
+ * @route   PATCH /api/admin/users/:id/role
+ * @desc    Update specific profile capability authorizations inside source of truth
+ */
 router.patch("/users/:id/role", async (req, res) => {
   try {
-    const db = req.app.get("db");
+    const userCollection = getUserCollection(req);
     const oid = toOid(req.params.id);
     const { role } = req.body;
 
     const allowedRoles = ["user", "artist", "admin"];
     if (!allowedRoles.includes(role)) {
-      return res.status(400).json({ message: "Invalid role" });
+      return res.status(400).json({ error: true, message: "Invalid role structural context assigned." });
     }
 
-    const result = await db.collection("user").findOneAndUpdate(
-      {
-        $or: [{ _id: oid }, { id: req.params.id }],
-      },
-      {
-        $set: {
-          role,
-          updatedAt: new Date(),
-        },
-      },
+    const result = await userCollection.findOneAndUpdate(
+      { $or: [{ _id: oid }, { id: req.params.id }] },
+      { $set: { role, updatedAt: new Date() } },
       { returnDocument: "after" }
     );
 
@@ -68,31 +69,36 @@ router.patch("/users/:id/role", async (req, res) => {
     res.status(200).json(updatedUser);
   } catch (err) {
     res.status(500).json({
-      message: "Failed to update role",
-      error: err.message,
+      error: true,
+      message: "Failed to mutate user role assignment.",
+      details: err.message,
     });
   }
 });
 
-// DELETE USER
+/**
+ * @route   DELETE /api/admin/users/:id
+ * @desc    Purge specific target profile document from master user collection registry
+ */
 router.delete("/users/:id", async (req, res) => {
   try {
-    const db = req.app.get("db");
+    const userCollection = getUserCollection(req);
     const oid = toOid(req.params.id);
 
-    const result = await db.collection("user").deleteOne({
+    const result = await userCollection.deleteOne({
       $or: [{ _id: oid }, { id: req.params.id }],
     });
 
     if (result.deletedCount === 0) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(404).json({ error: true, message: "Target user matrix registry entry not found." });
     }
 
-    res.status(200).json({ message: "User deleted successfully" });
+    res.status(200).json({ success: true, message: "User deleted successfully." });
   } catch (err) {
     res.status(500).json({
-      message: "Failed to delete user",
-      error: err.message,
+      error: true,
+      message: "Failed to execute user profile purge workflow.",
+      details: err.message,
     });
   }
 });
@@ -101,12 +107,14 @@ router.delete("/users/:id", async (req, res) => {
    ARTWORK MANAGEMENT
 ========================================================================= */
 
-// GET ALL ARTWORKS
+/**
+ * @route   GET /api/admin/artworks
+ * @desc    Fetch all cataloged listings inside centralized singular artwork collection
+ */
 router.get("/artworks", async (req, res) => {
   try {
-    const db = req.app.get("db");
-    const artworks = await db
-      .collection("artworks")
+    const artworkCollection = getArtworkCollection(req);
+    const artworks = await artworkCollection
       .find({})
       .sort({ createdAt: -1 })
       .toArray();
@@ -114,29 +122,34 @@ router.get("/artworks", async (req, res) => {
     res.status(200).json(artworks);
   } catch (err) {
     res.status(500).json({
-      message: "Failed to fetch artworks",
-      error: err.message,
+      error: true,
+      message: "Failed to fetch platform art marketplace listings.",
+      details: err.message,
     });
   }
 });
 
-// DELETE ARTWORK
+/**
+ * @route   DELETE /api/admin/artworks/:id
+ * @desc    Remove artwork object listing maps entirely from ecosystem records
+ */
 router.delete("/artworks/:id", async (req, res) => {
   try {
-    const db = req.app.get("db");
+    const artworkCollection = getArtworkCollection(req);
     const oid = toOid(req.params.id);
 
-    const result = await db.collection("artworks").deleteOne({ _id: oid });
+    const result = await artworkCollection.deleteOne({ _id: oid });
 
     if (result.deletedCount === 0) {
-      return res.status(404).json({ message: "Artwork not found" });
+      return res.status(404).json({ error: true, message: "Artwork item lookup footprint not found." });
     }
 
-    res.status(200).json({ message: "Artwork deleted successfully" });
+    res.status(200).json({ success: true, message: "Artwork deleted successfully from marketplace database." });
   } catch (err) {
     res.status(500).json({
-      message: "Failed to delete artwork",
-      error: err.message,
+      error: true,
+      message: "Failed to destroy targeted marketplace artwork asset.",
+      details: err.message,
     });
   }
 });
@@ -145,21 +158,26 @@ router.delete("/artworks/:id", async (req, res) => {
    ANALYTICS & DASHBOARD STATS
 ========================================================================= */
 
-// OVERVIEW ANALYTICS
+/**
+ * @route   GET /api/admin/analytics
+ * @desc    Compile basic core structural metric calculations via high-performance promise threading
+ */
 router.get("/analytics", async (req, res) => {
   try {
-    const db = req.app.get("db");
+    const userCollection = getUserCollection(req);
+    const artworkCollection = getArtworkCollection(req);
+    const orderCollection = getOrderCollection(req);
 
     const [totalUsers, totalArtists, totalArtworks, revenueData] = await Promise.all([
-      db.collection("user").countDocuments({ role: { $in: ["user", "buyer"] } }),
-      db.collection("user").countDocuments({ role: "artist" }),
-      db.collection("artworks").countDocuments(),
-      db.collection("orders")
+      userCollection.countDocuments({ role: { $in: ["user", "buyer"] } }),
+      userCollection.countDocuments({ role: "artist" }),
+      artworkCollection.countDocuments(),
+      orderCollection
         .aggregate([
           {
             $group: {
               _id: null,
-              totalRevenue: { $sum: { $ifNull: ["$amount", "$price"] } },
+              totalRevenue: { $sum: "$amount" },
               totalSales: { $sum: 1 },
             },
           },
@@ -178,35 +196,38 @@ router.get("/analytics", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({
-      message: "Failed to fetch analytics",
-      error: err.message,
+      error: true,
+      message: "Failed to compile aggregate platform data metrics.",
+      details: err.message,
     });
   }
 });
 
-// DASHBOARD OVERVIEW API
+/**
+ * @route   GET /api/admin/dashboard-stats
+ * @desc    Fetch advanced operational ledger items and real-time transaction tracking flows
+ */
 router.get("/dashboard-stats", async (req, res) => {
   try {
-    const db = req.app.get("db");
-    if (!db) {
-      return res.status(500).json({ message: "Database context connection lost." });
-    }
+    const userCollection = getUserCollection(req);
+    const artworkCollection = getArtworkCollection(req);
+    const orderCollection = getOrderCollection(req);
 
     const [totalUsers, verifiedArtworks, transactionsCount, revenueResult, recentSales] = await Promise.all([
-      db.collection("user").countDocuments(),
-      db.collection("artworks").countDocuments(),
-      db.collection("orders").countDocuments(),
-      db.collection("orders")
+      userCollection.countDocuments(),
+      artworkCollection.countDocuments(),
+      orderCollection.countDocuments(),
+      orderCollection
         .aggregate([
           {
             $group: {
               _id: null,
-              totalRevenue: { $sum: { $ifNull: ["$amount", "$price"] } },
+              totalRevenue: { $sum: "$amount" },
             },
           },
         ])
         .toArray(),
-      db.collection("orders").find({}).sort({ createdAt: -1 }).limit(5).toArray(),
+      orderCollection.find({}).sort({ date: -1 }).limit(5).toArray(),
     ]);
 
     res.status(200).json({
@@ -218,24 +239,27 @@ router.get("/dashboard-stats", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({
-      message: "Failed to load dashboard statistics from MongoDB",
-      error: error.message,
+      error: true,
+      message: "Failed to load dashboard operational statistics from live MongoDB cluster.",
+      details: error.message,
     });
   }
 });
 
-// SALES CHART
+/**
+ * @route   GET /api/admin/analytics/sales-chart
+ * @desc    Aggregate chronologically mapped transaction historical data pools for UI line charts
+ */
 router.get("/analytics/sales-chart", async (req, res) => {
   try {
-    const db = req.app.get("db");
-    const chartData = await db
-      .collection("orders")
+    const orderCollection = getOrderCollection(req);
+    const chartData = await orderCollection
       .aggregate([
         {
           $group: {
-            _id: { $dateToString: { format: "%Y-%m", date: "$createdAt" } },
+            _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
             sales: { $sum: 1 },
-            revenue: { $sum: { $ifNull: ["$amount", "$price"] } },
+            revenue: { $sum: "$amount" },
           },
         },
         { $sort: { _id: 1 } },
@@ -245,18 +269,21 @@ router.get("/analytics/sales-chart", async (req, res) => {
     res.status(200).json(chartData);
   } catch (err) {
     res.status(500).json({
-      message: "Failed to fetch chart data",
-      error: err.message,
+      error: true,
+      message: "Failed to map chronological ledger parameters.",
+      details: err.message,
     });
   }
 });
 
-// PIE CHART CATEGORY DATA
+/**
+ * @route   GET /api/admin/analytics/categories
+ * @desc    Compile visual category metric statistics for analytical interface graphs
+ */
 router.get("/analytics/categories", async (req, res) => {
   try {
-    const db = req.app.get("db");
-    const categoryData = await db
-      .collection("artworks")
+    const artworkCollection = getArtworkCollection(req);
+    const categoryData = await artworkCollection
       .aggregate([
         {
           $group: {
@@ -271,8 +298,9 @@ router.get("/analytics/categories", async (req, res) => {
     res.status(200).json(categoryData);
   } catch (err) {
     res.status(500).json({
-      message: "Failed to fetch category data",
-      error: err.message,
+      error: true,
+      message: "Failed to categorize inventory metrics.",
+      details: err.message,
     });
   }
 });
