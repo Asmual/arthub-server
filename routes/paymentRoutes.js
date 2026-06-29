@@ -14,7 +14,7 @@ router.get("/all-transactions", verifyToken, async (req, res) => {
   try {
     const orderCollection = getOrderCollection(req);
     const userCollection = getUserCollection(req);
-    
+   
     const operationalProfile = await userCollection.findOne({ email: req.user.email });
     if (!operationalProfile || operationalProfile.role !== "admin") {
       return res.status(403).json({ success: false, message: "Forbidden: Administrative credentials mandatory." });
@@ -33,6 +33,32 @@ router.get("/all-transactions", verifyToken, async (req, res) => {
 });
 
 /**
+ * @route   GET /api/payment/my-orders
+ * @desc    Fetch order history specifically for the authenticated buyer via token context
+ * @access  Private (JWT Required)
+ */
+router.get("/my-orders", verifyToken, async (req, res) => {
+  try {
+    const orderCollection = getOrderCollection(req);
+    const userEmail = req.user.email;
+
+    if (!userEmail) {
+      return res.status(400).json({ success: false, message: "User email identity context missing from authorization token." });
+    }
+
+    const orders = await orderCollection
+      .find({ buyerEmail: userEmail })
+      .sort({ date: -1 })
+      .toArray();
+
+    return res.status(200).json(orders);
+  } catch (error) {
+    console.error("Buyer Orders System Retrieval Failure:", error.message);
+    return res.status(500).json({ success: false, message: "Internal server error mapping customer order ledger paths." });
+  }
+});
+
+/**
  * @route   POST /api/payment/create-checkout-session
  * @desc    Initialize Stripe Dynamic Gateway checkout interface mapping session metadata payload
  * @access  Private (JWT Required)
@@ -42,7 +68,7 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
     const artworkCollection = getArtworkCollection(req);
     const { artworkId, price } = req.body;
     const userEmail = req.user.email;
-    const buyerId = req.user.id; // Secure extraction from signed application JWT identity token
+    const buyerId = req.user.id;
 
     if (!artworkId || !ObjectId.isValid(artworkId)) {
       return res.status(400).json({ success: false, message: "Invalid artwork reference identifier target." });
@@ -81,7 +107,7 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
       cancel_url: `${clientBaseUrl}/artwork/${artworkId}`,
       metadata: {
         artworkId: artworkId.toString(),
-        buyerId: buyerId, // MUST store application native MongoDB User ID configuration index
+        buyerId: buyerId,
         buyerEmail: userEmail,
         artworkTitle: artwork.title || "Original Gallery Artwork",
         artistEmail: artwork.artistEmail || ""
@@ -115,13 +141,11 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
 
     const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata;
 
-    // Deduplicate transaction insertion routines
     const existingOrder = await orderCollection.findOne({ transactionId: session.id });
     if (existingOrder) {
       return res.status(200).json({ success: true, message: "Transaction maps already fully initialized and integrated inside database storage systems." });
     }
 
-    // Flag artwork data object parameters out of public scope listings directly inside singular collection
     await artworkCollection.updateOne(
       { _id: new ObjectId(artworkId) },
       { $set: { isSold: true } }
@@ -132,7 +156,7 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
       type: "purchase",
       artworkId: new ObjectId(artworkId),
       artworkTitle: artworkTitle,
-      buyerId: buyerId, // Linked to MongoDB source of truth document configuration profile ID string
+      buyerId: buyerId,
       buyerEmail: buyerEmail,
       artistEmail: artistEmail,
       amount: session.amount_total / 100,
@@ -141,7 +165,6 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
 
     await orderCollection.insertOne(structuredOrderPayload);
 
-    // Dynamic increment execution paths for user purchase profiles
     await userCollection.updateOne(
       { email: buyerEmail },
       { $inc: { purchasesCount: 1 } }
@@ -182,7 +205,6 @@ router.post("/webhook", async (req, res) => {
       const existingOrder = await orderCollection.findOne({ transactionId: session.id });
      
       if (!existingOrder) {
-        // Enforce inventory data state validation adjustments inside production database instances
         await artworkCollection.updateOne(
           { _id: new ObjectId(artworkId) },
           { $set: { isSold: true } }
