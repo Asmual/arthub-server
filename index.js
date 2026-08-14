@@ -1,8 +1,8 @@
-// index.js
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 const connectDB = require("./config/db");
+
 
 // Core router configurations pipeline mapping
 const artistRoutes = require("./routes/artistRoutes");
@@ -33,7 +33,7 @@ app.use(
   })
 );
 
-// CRITICAL: Stripe webhook requires raw body payload before express.json() parser
+
 app.use("/api/payment/webhook", express.raw({ type: "application/json" }));
 
 // Standard JSON parser for all other incoming API operations
@@ -60,7 +60,7 @@ async function startServer() {
     app.use("/api/payment", paymentRoutes);
     app.use("/api/users", userRoutes);
     app.use("/api/admin", adminRoutes);
-    
+   
     // Global Centralized Fail-Safe Exception Catchment Endpoint Setup
     app.use((err, req, res, next) => {
       console.error("Global Infrastructure Error Caught:", err);

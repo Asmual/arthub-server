@@ -2,21 +2,27 @@ const express = require("express");
 const router = express.Router();
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { ObjectId } = require("mongodb");
-const { verifyToken } = require("../middlewares");
-const { getUserCollection, getArtworkCollection, getOrderCollection } = require("../models/collections");
+const { verifyToken, verifyRole } = require("../middlewares");
 
-/**
- * @route   GET /api/payment/all-transactions
- * @desc    Fetch comprehensive global transaction history records
- * @access  Private (JWT + Admin Role Authorization Check via Pipeline Guard)
- */
+const toOid = (id) => {
+  try {
+    return ObjectId.isValid(id) ? new ObjectId(id) : null;
+  } catch {
+    return null;
+  }
+};
+
+// ১. অল ট্রানজেকশন রাউট
 router.get("/all-transactions", verifyToken, async (req, res) => {
   try {
-    const orderCollection = getOrderCollection(req);
-    const userCollection = getUserCollection(req);
+    console.log(`[PAYMENT LOG] Fetching all transactions. Initiator: ${req.user.email}`);
+    const db = req.app.get("db");
+    const orderCollection = db.collection("orders");
+    const userCollection = db.collection("user");
    
     const operationalProfile = await userCollection.findOne({ email: req.user.email });
     if (!operationalProfile || operationalProfile.role !== "admin") {
+      console.warn(`[PAYMENT WARN] Unauthorized admin access attempt by: ${req.user.email}`);
       return res.status(403).json({ success: false, message: "Forbidden: Administrative credentials mandatory." });
     }
 
@@ -25,21 +31,19 @@ router.get("/all-transactions", verifyToken, async (req, res) => {
       .sort({ date: -1 })
       .toArray();
 
-    return res.status(200).json(transactions);
+    return res.status(200).json({ success: true, data: transactions });
   } catch (error) {
-    console.error("Master Ledger Aggregation Failure:", error.message);
+    console.error("[PAYMENT ERROR] Master Ledger Aggregation Failure:", error.message);
     return res.status(500).json({ success: false, message: "Internal server ledger tracking failure." });
   }
 });
 
-/**
- * @route   GET /api/payment/my-orders
- * @desc    Fetch order history specifically for the authenticated buyer via token context
- * @access  Private (JWT Required)
- */
+// ২. মাই অর্ডারস রাউট
 router.get("/my-orders", verifyToken, async (req, res) => {
   try {
-    const orderCollection = getOrderCollection(req);
+    console.log(`[PAYMENT LOG] Fetching orders for user: ${req.user.email}`);
+    const db = req.app.get("db");
+    const orderCollection = db.collection("orders");
     const userEmail = req.user.email;
 
     if (!userEmail) {
@@ -51,21 +55,18 @@ router.get("/my-orders", verifyToken, async (req, res) => {
       .sort({ date: -1 })
       .toArray();
 
-    return res.status(200).json(orders);
+    return res.status(200).json({ success: true, data: orders });
   } catch (error) {
-    console.error("Buyer Orders System Retrieval Failure:", error.message);
+    console.error("[PAYMENT ERROR] Buyer Orders System Retrieval Failure:", error.message);
     return res.status(500).json({ success: false, message: "Internal server error mapping customer order ledger paths." });
   }
 });
 
-/**
- * @route   POST /api/payment/create-checkout-session
- * @desc    Initialize Stripe Dynamic Gateway checkout interface mapping session metadata payload
- * @access  Private (JWT Required)
- */
+// ৩. ক্রিয়েট চেকআউট সেশন রাউট
 router.post("/create-checkout-session", verifyToken, async (req, res) => {
   try {
-    const artworkCollection = getArtworkCollection(req);
+    const db = req.app.get("db");
+    const artworkCollection = db.collection("artworks");
     const { artworkId, price } = req.body;
     const userEmail = req.user.email;
     const buyerId = req.user.id;
@@ -78,12 +79,23 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
     if (!artwork) {
       return res.status(404).json({ success: false, message: "Requested artwork missing from marketplace inventory." });
     }
-   
-    if (artwork.isSold === true) {
-      return res.status(400).json({ success: false, message: "Transaction blocked: Artwork asset state is already set to Sold." });
-    }
 
     const clientBaseUrl = process.env.CLIENT_URL || "http://localhost:3000";
+
+    const isValidDirectImageUrl = (url) => {
+      if (!url || typeof url !== "string") return false;
+      const URL_REGEX = /^https:\/\/[a-zA-Z0-9-_.]+\.[a-zA-Z]{2,}\/.*\.(jpg|jpeg|png|webp|gif|svg)(\?.*)?$/i;
+      return URL_REGEX.test(url) && !url.includes("localhost") && !url.includes("127.0.0.1");
+    };
+
+    const productData = {
+      name: artwork.title || "Original Artwork Blueprint",
+      description: `Original Masterpiece processing map via ArtHub Network`,
+    };
+
+    if (artwork.image && isValidDirectImageUrl(artwork.image)) {
+      productData.images = [artwork.image];
+    }
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
@@ -93,11 +105,7 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
         {
           price_data: {
             currency: "usd",
-            product_data: {
-              name: artwork.title || "Original Artwork Blueprint",
-              images: artwork.image ? [artwork.image] : [],
-              description: `Original Masterpiece processing map via ArtHub Network`,
-            },
+            product_data: productData,
             unit_amount: Math.round(Number(price || artwork.price) * 100),
           },
           quantity: 1,
@@ -110,28 +118,23 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
         buyerId: buyerId,
         buyerEmail: userEmail,
         artworkTitle: artwork.title || "Original Gallery Artwork",
-        artistEmail: artwork.artistEmail || ""
+        artistEmail: artwork.artistEmail || artwork.userEmail || "" 
       }
     });
 
     return res.status(200).json({ success: true, url: session.url });
   } catch (error) {
-    console.error("Stripe Session Creation Failure:", error.message);
-    return res.status(500).json({ success: false, message: "System core failed to securely construct checkout pipe session orchestration maps.", error: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
-/**
- * @route   POST /api/payment/verify-payment-sync
- * @desc    Perform synchronous data validations post-redirection flow for client performance guarantees
- * @access  Private (JWT Required)
- */
+// ৪. ভেরিফাই পেমেন্ট সিঙ্ক রাউট
 router.post("/verify-payment-sync", verifyToken, async (req, res) => {
   const { sessionId } = req.body;
   try {
-    const artworkCollection = getArtworkCollection(req);
-    const orderCollection = getOrderCollection(req);
-    const userCollection = getUserCollection(req);
+    const db = req.app.get("db");
+    const orderCollection = db.collection("orders");
+    const userCollection = db.collection("user");
 
     const session = await stripe.checkout.sessions.retrieve(sessionId);
    
@@ -143,24 +146,20 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
 
     const existingOrder = await orderCollection.findOne({ transactionId: session.id });
     if (existingOrder) {
-      return res.status(200).json({ success: true, message: "Transaction maps already fully initialized and integrated inside database storage systems." });
+      return res.status(200).json({ success: true, message: "Transaction maps already integrated." });
     }
-
-    await artworkCollection.updateOne(
-      { _id: new ObjectId(artworkId) },
-      { $set: { isSold: true } }
-    );
 
     const structuredOrderPayload = {
       transactionId: session.id,
       type: "purchase",
-      artworkId: new ObjectId(artworkId),
+      artworkId: toOid(artworkId) || artworkId,
       artworkTitle: artworkTitle,
-      buyerId: buyerId,
+      buyerId: toOid(buyerId) || buyerId,
       buyerEmail: buyerEmail,
-      artistEmail: artistEmail,
+      artistEmail: artistEmail ? artistEmail.trim().toLowerCase() : "",
       amount: session.amount_total / 100,
-      date: new Date()
+      date: new Date(),
+      createdAt: new Date()
     };
 
     await orderCollection.insertOne(structuredOrderPayload);
@@ -170,19 +169,14 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
       { $inc: { purchasesCount: 1 } }
     );
 
-    return res.status(200).json({ success: true, message: "Stripe data metrics successfully integrated into application structural storage engines." });
+    return res.status(200).json({ success: true, message: "Stripe data metrics successfully integrated." });
   } catch (error) {
-    console.error("Order Insertion Runtime Failure:", error.message);
-    return res.status(500).json({ success: false, message: "Database ledger tracking failure mapping transaction paths.", error: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
-/**
- * @route   POST /api/payment/webhook
- * @desc    Asynchronous operational failsafe handler dealing directly with raw system signals emitted from Stripe servers
- * @access  Public Gateway Configuration (Middleware Exclusion Rule Target)
- */
-router.post("/webhook", async (req, res) => {
+// ৫. স্ট্রাইপ ওয়েবহুক রাউট
+router.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
 
@@ -190,36 +184,31 @@ router.post("/webhook", async (req, res) => {
     const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
     event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
   } catch (err) {
-    console.error("Webhook Signature Verification Failed:", err.message);
-    return res.status(400).send(`Webhook Error Integration Failure Sequence: ${err.message}`);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
-    const artworkCollection = getArtworkCollection(req);
-    const orderCollection = getOrderCollection(req);
-    const userCollection = getUserCollection(req);
+    const db = req.app.get("db");
+    const orderCollection = db.collection("orders");
+    const userCollection = db.collection("user");
 
     try {
       const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata;
       const existingOrder = await orderCollection.findOne({ transactionId: session.id });
      
       if (!existingOrder) {
-        await artworkCollection.updateOne(
-          { _id: new ObjectId(artworkId) },
-          { $set: { isSold: true } }
-        );
-
         const structuredOrderPayload = {
           transactionId: session.id,
           type: "purchase",
-          artworkId: new ObjectId(artworkId),
+          artworkId: toOid(artworkId) || artworkId,
           artworkTitle: artworkTitle,
-          buyerId: buyerId,
+          buyerId: toOid(buyerId) || buyerId,
           buyerEmail: buyerEmail,
-          artistEmail: artistEmail,
+          artistEmail: artistEmail ? artistEmail.trim().toLowerCase() : "",
           amount: session.amount_total / 100,
-          date: new Date()
+          date: new Date(),
+          createdAt: new Date()
         };
 
         await orderCollection.insertOne(structuredOrderPayload);
@@ -228,16 +217,38 @@ router.post("/webhook", async (req, res) => {
           { email: buyerEmail },
           { $inc: { purchasesCount: 1 } }
         );
-
-        console.log(`Webhook Operational Broadcast Success: Order successfully tracked for transaction lifecycle index allocation ${session.id}`);
       }
     } catch (error) {
-      console.error("Webhook Database Integration Pipeline Crash:", error.message);
-      return res.status(500).json({ message: "Internal pipeline serialization architecture error caught during live operational state mutation." });
+      console.error("[WEBHOOK CRITICAL ERROR]", error.message);
     }
   }
 
   res.json({ received: true });
+});
+
+
+router.get("/my-sales", verifyToken, verifyRole(["artist"]), async (req, res) => {
+  try {
+    const db = req.app.get("db");
+    const orderCollection = db.collection("orders");
+    
+    const artistEmail = req.user.email ? req.user.email.trim().toLowerCase() : "";
+
+    console.log(`[PAYMENT LOG] Fetching sales for artist email: ${artistEmail}`);
+
+    const sales = await orderCollection
+      .find({ artistEmail: artistEmail })
+      .sort({ date: -1 })
+      .toArray();
+
+    return res.status(200).json({ success: true, data: sales });
+  } catch (err) {
+    return res.status(500).json({
+      error: true,
+      message: "Database read fault encountered while generating order ledgers.",
+      details: err.message
+    });
+  }
 });
 
 module.exports = router;

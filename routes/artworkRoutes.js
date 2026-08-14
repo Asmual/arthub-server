@@ -1,12 +1,10 @@
+/* eslint-disable no-undef */
 const express = require("express");
 const router = express.Router();
 const { ObjectId } = require("mongodb");
 const { verifyToken, verifyRole } = require("../middlewares");
 const { getArtworkCollection, getUserCollection, getCommentCollection, getOrderCollection } = require("../models/collections");
 
-/**
- * Utility helper to safely cast string IDs to MongoDB ObjectIds
- */
 const toOid = (id) => {
   try {
     return ObjectId.isValid(id) ? new ObjectId(id) : null;
@@ -15,16 +13,21 @@ const toOid = (id) => {
   }
 };
 
-/**
- * @route   GET /api/artworks/featured
- * @desc    Retrieve 6 random unsold items for dynamic homepage feed
- * @access  Public
- */
+const escapeRegex = (string) => {
+  return string.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+};
+
+const isValidDirectImageUrl = (url) => {
+  if (!url || typeof url !== "string") return false;
+  const URL_REGEX = /^https:\/\/[a-zA-Z0-9-_.]+\.[a-zA-Z]{2,}\/.*\.(jpg|jpeg|png|webp|gif|svg)(\?.*)?$/i;
+  return URL_REGEX.test(url);
+};
+
 router.get("/featured", async (req, res) => {
   try {
     const artworkCollection = getArtworkCollection(req);
     const artworks = await artworkCollection.aggregate([
-      { $match: { isSold: { $ne: true }, isDraft: { $ne: true } } },
+      { $match: { isDraft: { $ne: true } } },
       { $sample: { size: 6 } },
     ]).toArray();
     res.json(artworks);
@@ -33,11 +36,6 @@ router.get("/featured", async (req, res) => {
   }
 });
 
-/**
- * @route   GET /api/artworks
- * @desc    Browse paginated catalog with comprehensive search query support
- * @access  Public
- */
 router.get("/", async (req, res) => {
   try {
     const artworkCollection = getArtworkCollection(req);
@@ -45,21 +43,21 @@ router.get("/", async (req, res) => {
 
     const finalFilter = {};
 
-    if (search?.trim() && search !== "undefined") {
-      const searchRegex = new RegExp(search.trim(), "i");
+    if (search?.trim() && search !== "undefined" && search !== "null") {
+      const sanitizedSearch = escapeRegex(search.trim());
+      const searchRegex = new RegExp(sanitizedSearch, "i");
       finalFilter.$or = [{ title: searchRegex }, { artistName: searchRegex }];
     }
 
-    if (category?.trim() && category !== "undefined" && category !== "all") {
-      finalFilter.category = { $regex: category.trim(), $options: "i" };
+    if (category?.trim() && category !== "undefined" && category !== "null" && category !== "all") {
+      finalFilter.category = { $regex: escapeRegex(category.trim()), $options: "i" };
     }
 
-    // Support direct filtering by artist email query context
-    if (email?.trim() && email !== "undefined") {
+    if (email?.trim() && email !== "undefined" && email !== "null") {
       finalFilter.artistEmail = email.trim();
     }
 
-    if (artistId && artistId !== "undefined") {
+    if (artistId && artistId !== "undefined" && artistId !== "null") {
       const oid = toOid(artistId);
       finalFilter.$or = [
         { userId: artistId },
@@ -72,8 +70,9 @@ router.get("/", async (req, res) => {
 
     if ((minPrice && minPrice !== "undefined") || (maxPrice && maxPrice !== "undefined")) {
       finalFilter.price = {};
-      if (minPrice && minPrice !== "undefined") finalFilter.price.$gte = Number(minPrice);
-      if (maxPrice && maxPrice !== "undefined") finalFilter.price.$lte = Number(maxPrice);
+      if (minPrice && minPrice !== "undefined" && !isNaN(minPrice)) finalFilter.price.$gte = Number(minPrice);
+      if (maxPrice && maxPrice !== "undefined" && !isNaN(maxPrice)) finalFilter.price.$lte = Number(maxPrice);
+      if (Object.keys(finalFilter.price).length === 0) delete finalFilter.price;
     }
 
     const sortMap = {
@@ -106,11 +105,6 @@ router.get("/", async (req, res) => {
   }
 });
 
-/**
- * @route   GET /api/artworks/:id
- * @desc    Detailed profile lookup using aggregate join logic from singular user collection
- * @access  Public
- */
 router.get("/:id", async (req, res) => {
   try {
     const artworkCollection = getArtworkCollection(req);
@@ -157,11 +151,6 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-/**
- * @route   POST /api/artworks
- * @desc    Add a new single portfolio entry under structural sub-tier allocation limits
- * @access  Private (JWT + Artist/Admin Role Guard Required)
- */
 router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
   try {
     const artworkCollection = getArtworkCollection(req);
@@ -172,14 +161,23 @@ router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) 
       return res.status(400).json({ error: true, message: "Required payload matrix indices (title, price, image) missing." });
     }
 
+    if (!isValidDirectImageUrl(image)) {
+      return res.status(400).json({ error: true, message: "The resource link provided must be a valid, direct HTTPS image URL." });
+    }
+
     const artistProfile = await userCollection.findOne({ email: req.user.email });
     if (!artistProfile) {
       return res.status(404).json({ error: true, message: "Associated platform artist identity record missing." });
     }
 
-    // Evaluate dynamic account capability parameters against inventory metrics
     const currentTier = artistProfile.subscriptionTier || "free";
-    const totalExistingArtworks = await artworkCollection.countDocuments({ userId: req.user.id });
+   
+    const totalExistingArtworks = await artworkCollection.countDocuments({
+      $or: [
+        { userId: req.user.id },
+        { userId: toOid(req.user.id) }
+      ]
+    });
 
     if (currentTier === "free" && totalExistingArtworks >= 3) {
       return res.status(403).json({ error: true, message: "Tier limit exceeded. Free tier profiles are limited to 3 listings." });
@@ -209,23 +207,21 @@ router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) 
   }
 });
 
-/**
- * @route   PUT /api/artworks/:id
- * @desc    Apply metadata property changes safely with ownership checking
- * @access  Private (JWT + Artist/Admin Role Guard Required)
- */
 router.put("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
   try {
     const artworkCollection = getArtworkCollection(req);
     const oid = toOid(req.params.id);
-    const { title, description, price, category, image } = req.body;
+    const { title, description, price, category, image, isSold } = req.body;
 
     const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
     if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork listing profile target missing." });
 
-    // Enforce isolation ownership rule context
     if (existingArtwork.userId !== req.user.id && req.user.role !== "admin") {
       return res.status(403).json({ error: true, message: "Forbidden: Ownership mapping validation mismatch." });
+    }
+
+    if (image !== undefined && !isValidDirectImageUrl(image)) {
+      return res.status(400).json({ error: true, message: "The modified link resource must be a valid, direct HTTPS image URL." });
     }
    
     const updatePayload = {
@@ -236,6 +232,7 @@ router.put("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res
     if (category !== undefined) updatePayload.category = category;
     if (image !== undefined) updatePayload.image = image;
     if (price !== undefined) updatePayload.price = Number(price);
+    if (isSold !== undefined) updatePayload.isSold = Boolean(isSold);
 
     const result = await artworkCollection.findOneAndUpdate(
       { _id: existingArtwork._id },
@@ -250,11 +247,6 @@ router.put("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res
   }
 });
 
-/**
- * @route   DELETE /api/artworks/:id
- * @desc    Terminate standard catalog data entry with strict access validation checks
- * @access  Private (JWT + Artist/Admin Role Guard Required)
- */
 router.delete("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
   try {
     const artworkCollection = getArtworkCollection(req);
@@ -274,11 +266,6 @@ router.delete("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, 
   }
 });
 
-/**
- * @route   GET /api/artworks/:id/comments
- * @desc    Query dynamic interactions feedback feed for single context entity
- * @access  Public
- */
 router.get("/:id/comments", async (req, res) => {
   try {
     const commentCollection = getCommentCollection(req);
@@ -292,11 +279,6 @@ router.get("/:id/comments", async (req, res) => {
   }
 });
 
-/**
- * @route   POST /api/artworks/:id/comments
- * @desc    Authenticated entry with order receipt verification validation
- * @access  Private (JWT Required)
- */
 router.post("/:id/comments", verifyToken, async (req, res) => {
   try {
     const commentCollection = getCommentCollection(req);
@@ -308,7 +290,6 @@ router.post("/:id/comments", verifyToken, async (req, res) => {
       return res.status(400).json({ error: true, message: "Comment feedback core message body parameter required." });
     }
 
-    // Verify buyer transaction verification status prior to feedback ingestion loop processing
     const purchased = await orderCollection.findOne({
       artworkId: toOid(artworkId) || artworkId,
       buyerEmail: req.user.email,

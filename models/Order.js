@@ -1,25 +1,31 @@
 /**
  * Helper to structure and validate order documents before inserting into the MongoDB 'orders' collection.
- * Supports both artwork purchases and tier subscription models.
+ * Normalizes user data and ensures compliance with transaction tracking properties.
  */
 const prepareOrderData = (data) => {
   const order = {
     artworkId: data.artworkId || null,
     buyerId: data.buyerId || "",
     buyerEmail: data.buyerEmail ? data.buyerEmail.trim().toLowerCase() : "",
-    price: Number(data.price) || 0,
+    artistEmail: data.artistEmail ? data.artistEmail.trim().toLowerCase() : "",
+    artworkTitle: data.artworkTitle || "",
+    amount: Number(data.amount || data.price) || 0,
     transactionId: data.transactionId || "",
-    type: ["purchase", "subscription"].includes(data.type) ? data.type : "purchase",
-    tier: ["free", "pro", "premium"].includes(data.tier) ? data.tier : null,
     status: ["paid", "failed", "pending"].includes(data.status) ? data.status : "paid",
     createdAt: data.createdAt || new Date(),
     updatedAt: new Date()
   };
 
-  // Basic runtime validation rules
-  if (!order.buyerId) throw new Error("Validation Error: buyerId is strictly required.");
-  if (!order.transactionId) throw new Error("Validation Error: transactionId is strictly required.");
-  if (order.price <= 0 && order.type === "purchase") throw new Error("Validation Error: price must be greater than 0.");
+  // Runtime assertion enforcing strict system-wide validation rules
+  if (!order.buyerId) {
+    throw new Error("Validation Error: buyerId is strictly required.");
+  }
+  if (!order.transactionId) {
+    throw new Error("Validation Error: transactionId is strictly required.");
+  }
+  if (order.amount <= 0) {
+    throw new Error("Validation Error: financial transaction amount must be greater than 0.");
+  }
 
   return order;
 };

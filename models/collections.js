@@ -1,7 +1,3 @@
-/**
- * Global database collection registry helper for Native MongoDB Driver.
- * Ensures consistent collection names matching the production database architecture.
- */
 const getCollection = (req, collectionName) => {
   const db = req.app.get("db");
   if (!db) {
