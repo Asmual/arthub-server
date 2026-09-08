@@ -4,6 +4,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { ObjectId } = require("mongodb");
 const { verifyToken, verifyRole } = require("../middlewares");
 
+// Helper to safely convert string ID to MongoDB ObjectId
 const toOid = (id) => {
   try {
     return ObjectId.isValid(id) ? new ObjectId(id) : null;
@@ -12,87 +13,58 @@ const toOid = (id) => {
   }
 };
 
-router.get("/all-transactions", verifyToken, async (req, res) => {
-  try {
-    console.log(`[PAYMENT LOG] Fetching all transactions. Initiator: ${req.user.email}`);
-    const db = req.app.get("db");
-    const orderCollection = db.collection("orders");
-    const userCollection = db.collection("user");
-   
-    const operationalProfile = await userCollection.findOne({ email: req.user.email });
-    if (!operationalProfile || operationalProfile.role !== "admin") {
-      console.warn(`[PAYMENT WARN] Unauthorized admin access attempt by: ${req.user.email}`);
-      return res.status(403).json({ success: false, message: "Forbidden: Administrative credentials mandatory." });
-    }
+// Helper to validate external image URLs for Stripe
+const isValidStripeImageUrl = (url) => {
+  if (!url || typeof url !== "string") return false;
+  const urlRegex = /^https:\/\/[a-zA-Z0-9-_.]+\.[a-zA-Z]{2,}\/.*\.(jpg|jpeg|png|webp|gif|svg)(\?.*)?$/i;
+  return urlRegex.test(url) && !url.includes("localhost") && !url.includes("127.0.0.1");
+};
 
-    const transactions = await orderCollection
-      .find({})
-      .sort({ date: -1 })
-      .toArray();
-
-    return res.status(200).json({ success: true, data: transactions });
-  } catch (error) {
-    console.error("[PAYMENT ERROR] Master Ledger Aggregation Failure:", error.message);
-    return res.status(500).json({ success: false, message: "Internal server ledger tracking failure." });
-  }
-});
-
-
-router.get("/my-orders", verifyToken, async (req, res) => {
-  try {
-    console.log(`[PAYMENT LOG] Fetching orders for user: ${req.user.email}`);
-    const db = req.app.get("db");
-    const orderCollection = db.collection("orders");
-    const userEmail = req.user.email;
-
-    if (!userEmail) {
-      return res.status(400).json({ success: false, message: "User email identity context missing from authorization token." });
-    }
-
-    const orders = await orderCollection
-      .find({ buyerEmail: userEmail })
-      .sort({ date: -1 })
-      .toArray();
-
-    return res.status(200).json({ success: true, data: orders });
-  } catch (error) {
-    console.error("[PAYMENT ERROR] Buyer Orders System Retrieval Failure:", error.message);
-    return res.status(500).json({ success: false, message: "Internal server error mapping customer order ledger paths." });
-  }
-});
-
+// Create a Stripe checkout session
 router.post("/create-checkout-session", verifyToken, async (req, res) => {
   try {
     const db = req.app.get("db");
     const artworkCollection = db.collection("artworks");
     const { artworkId, price } = req.body;
     const userEmail = req.user.email;
-    const buyerId = req.user.id;
+    const buyerId = req.user.id || req.user._id?.toString();
 
     if (!artworkId || !ObjectId.isValid(artworkId)) {
-      return res.status(400).json({ success: false, message: "Invalid artwork reference identifier target." });
+      return res.status(400).json({ success: false, message: "Invalid artwork ID." });
     }
 
     const artwork = await artworkCollection.findOne({ _id: new ObjectId(artworkId) });
     if (!artwork) {
-      return res.status(404).json({ success: false, message: "Requested artwork missing from marketplace inventory." });
+      return res.status(404).json({ success: false, message: "Artwork not found in inventory." });
     }
 
-    const clientBaseUrl = process.env.CLIENT_URL || "http://localhost:3000";
+    if (artwork.isSold) {
+      return res.status(400).json({ success: false, message: "This artwork has already been sold." });
+    }
 
-    const isValidDirectImageUrl = (url) => {
-      if (!url || typeof url !== "string") return false;
-      const URL_REGEX = /^https:\/\/[a-zA-Z0-9-_.]+\.[a-zA-Z]{2,}\/.*\.(jpg|jpeg|png|webp|gif|svg)(\?.*)?$/i;
-      return URL_REGEX.test(url) && !url.includes("localhost") && !url.includes("127.0.0.1");
-    };
+    const artistEmail = (artwork.artistEmail || artwork.userEmail || "").trim().toLowerCase();
+    const artistId = artwork.userId?.toString() || artwork.artistId?.toString();
+    if (userEmail && artistEmail && userEmail.toLowerCase() === artistEmail) {
+      return res.status(400).json({ success: false, message: "Artists cannot purchase their own artwork." });
+    }
+    if (buyerId && artistId && buyerId === artistId) {
+      return res.status(400).json({ success: false, message: "Artists cannot purchase their own artwork." });
+    }
+
+    const clientBaseUrl = (process.env.CLIENT_URL || "http://localhost:3000").replace(/\/$/, "");
 
     const productData = {
-      name: artwork.title || "Original Artwork Blueprint",
-      description: `Original Masterpiece processing map via ArtHub Network`,
+      name: artwork.title || "Original Artwork",
+      description: artwork.category ? `Category: ${artwork.category}` : "Original ArtHub Piece",
     };
 
-    if (artwork.image && isValidDirectImageUrl(artwork.image)) {
+    if (artwork.image && isValidStripeImageUrl(artwork.image)) {
       productData.images = [artwork.image];
+    }
+
+    const sessionAmount = Math.round(Number(price || artwork.price) * 100);
+    if (isNaN(sessionAmount) || sessionAmount <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid artwork price amount." });
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -104,30 +76,37 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
           price_data: {
             currency: "usd",
             product_data: productData,
-            unit_amount: Math.round(Number(price || artwork.price) * 100),
+            unit_amount: sessionAmount,
           },
           quantity: 1,
         },
       ],
-      success_url: `${clientBaseUrl}/dashboard/user?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${clientBaseUrl}/browse/${artworkId}`,
+      success_url: `${clientBaseUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${clientBaseUrl}/checkout/cancel?artworkId=${artworkId}`,
       metadata: {
         artworkId: artworkId.toString(),
-        buyerId: buyerId,
+        buyerId: buyerId ? buyerId.toString() : "",
         buyerEmail: userEmail,
-        artworkTitle: artwork.title || "Original Gallery Artwork",
-        artistEmail: artwork.artistEmail || artwork.userEmail || "" 
-      }
+        artworkTitle: artwork.title || "Original Artwork",
+        artistEmail: artistEmail,
+        price: String(price || artwork.price),
+      },
     });
 
-    return res.status(200).json({ success: true, url: session.url });
+    return res.status(200).json({ success: true, url: session.url, sessionId: session.id });
   } catch (error) {
+    console.error("[PAYMENT ERROR] Create checkout session error:", error.message);
     return res.status(500).json({ success: false, message: error.message });
   }
 });
 
+// Verify and synchronize Stripe checkout session payment
 router.post("/verify-payment-sync", verifyToken, async (req, res) => {
   const { sessionId } = req.body;
+  if (!sessionId) {
+    return res.status(400).json({ success: false, message: "Missing sessionId parameter." });
+  }
+
   try {
     const db = req.app.get("db");
     const orderCollection = db.collection("orders");
@@ -135,16 +114,16 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
     const artworkCollection = db.collection("artworks");
 
     const session = await stripe.checkout.sessions.retrieve(sessionId);
-   
+
     if (session.payment_status !== "paid") {
-      return res.status(400).json({ success: false, message: "Unverified transaction settlement clearance profile tracked." });
+      return res.status(400).json({ success: false, message: "Payment has not been completed." });
     }
 
     const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata || {};
 
     const existingOrder = await orderCollection.findOne({ transactionId: session.id });
     if (existingOrder) {
-      return res.status(200).json({ success: true, message: "Transaction maps already integrated." });
+      return res.status(200).json({ success: true, data: existingOrder, message: "Order already verified and registered." });
     }
 
     const artworkOid = toOid(artworkId);
@@ -152,7 +131,9 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
       ? await artworkCollection.findOne({ $or: [{ _id: artworkOid }, { _id: artworkId }] })
       : await artworkCollection.findOne({ _id: artworkId });
 
-    const finalArtistEmail = (artistEmail || artworkDoc?.artistEmail || "").trim().toLowerCase();
+    const finalArtistEmail = (artistEmail || artworkDoc?.artistEmail || artworkDoc?.userEmail || "").trim().toLowerCase();
+    const finalBuyerEmail = (buyerEmail || session.customer_email || req.user.email || "").trim().toLowerCase();
+    const resolvedBuyerId = toOid(buyerId) || toOid(req.user.id) || buyerId || req.user.id;
 
     const structuredOrderPayload = {
       transactionId: session.id,
@@ -166,26 +147,30 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
         image: artworkDoc.image,
         price: artworkDoc.price,
         category: artworkDoc.category,
-        artistName: artworkDoc.artistName,
-        artistEmail: artworkDoc.artistEmail
+        artistName: artworkDoc.artistName || artworkDoc.artist?.name,
+        artistEmail: finalArtistEmail,
       } : null,
-      buyerId: toOid(buyerId) || buyerId,
-      buyerEmail: buyerEmail,
+      buyerId: resolvedBuyerId,
+      buyerEmail: finalBuyerEmail,
       artistEmail: finalArtistEmail,
       amount: session.amount_total / 100,
       price: session.amount_total / 100,
+      currency: session.currency || "usd",
       status: "paid",
+      paymentMethod: session.payment_method_types?.[0] || "card",
       date: new Date(),
-      createdAt: new Date()
+      createdAt: new Date(),
     };
 
     await orderCollection.insertOne(structuredOrderPayload);
 
     // Update buyer purchase counter
-    await userCollection.updateOne(
-      { email: buyerEmail },
-      { $inc: { purchasesCount: 1 } }
-    );
+    if (finalBuyerEmail) {
+      await userCollection.updateOne(
+        { email: finalBuyerEmail },
+        { $inc: { purchasesCount: 1 } }
+      );
+    }
 
     // Mark artwork as sold
     if (artworkDoc) {
@@ -194,10 +179,11 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
         {
           $set: {
             isSold: true,
-            buyerId: toOid(buyerId) || buyerId,
-            buyerEmail: buyerEmail,
-            updatedAt: new Date()
-          }
+            buyerId: resolvedBuyerId,
+            buyerEmail: finalBuyerEmail,
+            soldAt: new Date(),
+            updatedAt: new Date(),
+          },
         }
       );
     }
@@ -210,20 +196,158 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
       );
     }
 
-    return res.status(200).json({ success: true, message: "Stripe data metrics successfully integrated." });
+    return res.status(200).json({
+      success: true,
+      data: structuredOrderPayload,
+      message: "Payment verified and order created successfully.",
+    });
+  } catch (error) {
+    console.error("[PAYMENT ERROR] Verify payment sync error:", error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Retrieve order details by Stripe session ID
+router.get("/session/:sessionId", verifyToken, async (req, res) => {
+  try {
+    const db = req.app.get("db");
+    const orderCollection = db.collection("orders");
+    const { sessionId } = req.params;
+
+    const order = await orderCollection.findOne({ transactionId: sessionId });
+    if (order) {
+      return res.status(200).json({ success: true, data: order });
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    if (!session) {
+      return res.status(404).json({ success: false, message: "Checkout session not found." });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        transactionId: session.id,
+        amount: session.amount_total / 100,
+        currency: session.currency,
+        status: session.payment_status,
+        metadata: session.metadata,
+      },
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
 });
 
-router.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+// Fetch purchase orders for the authenticated buyer
+router.get("/my-orders", verifyToken, async (req, res) => {
+  try {
+    const db = req.app.get("db");
+    const orderCollection = db.collection("orders");
+    const userEmail = req.user.email?.toLowerCase();
+    const userId = req.user.id || req.user._id?.toString();
+    const userOid = toOid(userId);
+
+    const query = {
+      $or: [
+        { buyerEmail: userEmail },
+        ...(userOid ? [{ buyerId: userOid }] : []),
+        ...(userId ? [{ buyerId: userId }] : []),
+      ],
+    };
+
+    const orders = await orderCollection
+      .find(query)
+      .sort({ date: -1, createdAt: -1 })
+      .toArray();
+
+    return res.status(200).json({ success: true, data: orders, orders });
+  } catch (error) {
+    console.error("[PAYMENT ERROR] Fetch my-orders error:", error.message);
+    return res.status(500).json({ success: false, message: "Failed to retrieve order history." });
+  }
+});
+
+// Fetch purchase history by user identifier
+router.get("/history/:userIdentifier", verifyToken, async (req, res) => {
+  try {
+    const db = req.app.get("db");
+    const orderCollection = db.collection("orders");
+    const { userIdentifier } = req.params;
+    const identifierOid = toOid(userIdentifier);
+
+    const query = {
+      $or: [
+        { buyerEmail: userIdentifier.toLowerCase() },
+        { buyerEmail: req.user.email?.toLowerCase() },
+        ...(identifierOid ? [{ buyerId: identifierOid }] : []),
+        { buyerId: userIdentifier },
+      ],
+    };
+
+    const orders = await orderCollection
+      .find(query)
+      .sort({ date: -1, createdAt: -1 })
+      .toArray();
+
+    return res.status(200).json({ success: true, data: orders, orders });
+  } catch (error) {
+    console.error("[PAYMENT ERROR] Fetch history error:", error.message);
+    return res.status(500).json({ success: false, message: "Failed to retrieve purchase history." });
+  }
+});
+
+// Fetch sales orders for the authenticated artist
+router.get("/my-sales", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
+  try {
+    const db = req.app.get("db");
+    const orderCollection = db.collection("orders");
+    const artistEmail = (req.user.email || "").trim().toLowerCase();
+
+    const sales = await orderCollection
+      .find({ artistEmail: artistEmail })
+      .sort({ date: -1, createdAt: -1 })
+      .toArray();
+
+    return res.status(200).json({ success: true, data: sales, sales });
+  } catch (error) {
+    console.error("[PAYMENT ERROR] Fetch my-sales error:", error.message);
+    return res.status(500).json({ success: false, message: "Failed to retrieve sales records." });
+  }
+});
+
+// Fetch all transactions across the platform for admin
+router.get("/all-transactions", verifyToken, verifyRole(["admin"]), async (req, res) => {
+  try {
+    const db = req.app.get("db");
+    const orderCollection = db.collection("orders");
+
+    const transactions = await orderCollection
+      .find({})
+      .sort({ date: -1, createdAt: -1 })
+      .toArray();
+
+    return res.status(200).json({ success: true, data: transactions, transactions });
+  } catch (error) {
+    console.error("[PAYMENT ERROR] Fetch all transactions error:", error.message);
+    return res.status(500).json({ success: false, message: "Failed to retrieve all transactions." });
+  }
+});
+
+// Stripe webhook handler for background event processing
+router.post("/webhook", async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
 
   try {
     const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
-    event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+    if (endpointSecret) {
+      event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+    } else {
+      event = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+    }
   } catch (err) {
+    console.error("[STRIPE WEBHOOK ERROR] Signature verification failed:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -237,14 +361,16 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
     try {
       const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata || {};
       const existingOrder = await orderCollection.findOne({ transactionId: session.id });
-     
+
       if (!existingOrder) {
         const artworkOid = toOid(artworkId);
         const artworkDoc = artworkOid
           ? await artworkCollection.findOne({ $or: [{ _id: artworkOid }, { _id: artworkId }] })
           : await artworkCollection.findOne({ _id: artworkId });
 
-        const finalArtistEmail = (artistEmail || artworkDoc?.artistEmail || "").trim().toLowerCase();
+        const finalArtistEmail = (artistEmail || artworkDoc?.artistEmail || artworkDoc?.userEmail || "").trim().toLowerCase();
+        const finalBuyerEmail = (buyerEmail || session.customer_email || "").trim().toLowerCase();
+        const resolvedBuyerId = toOid(buyerId) || buyerId;
 
         const structuredOrderPayload = {
           transactionId: session.id,
@@ -258,25 +384,29 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
             image: artworkDoc.image,
             price: artworkDoc.price,
             category: artworkDoc.category,
-            artistName: artworkDoc.artistName,
-            artistEmail: artworkDoc.artistEmail
+            artistName: artworkDoc.artistName || artworkDoc.artist?.name,
+            artistEmail: finalArtistEmail,
           } : null,
-          buyerId: toOid(buyerId) || buyerId,
-          buyerEmail: buyerEmail,
+          buyerId: resolvedBuyerId,
+          buyerEmail: finalBuyerEmail,
           artistEmail: finalArtistEmail,
           amount: session.amount_total / 100,
           price: session.amount_total / 100,
+          currency: session.currency || "usd",
           status: "paid",
+          paymentMethod: session.payment_method_types?.[0] || "card",
           date: new Date(),
-          createdAt: new Date()
+          createdAt: new Date(),
         };
 
         await orderCollection.insertOne(structuredOrderPayload);
 
-        await userCollection.updateOne(
-          { email: buyerEmail },
-          { $inc: { purchasesCount: 1 } }
-        );
+        if (finalBuyerEmail) {
+          await userCollection.updateOne(
+            { email: finalBuyerEmail },
+            { $inc: { purchasesCount: 1 } }
+          );
+        }
 
         if (artworkDoc) {
           await artworkCollection.updateOne(
@@ -284,10 +414,11 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
             {
               $set: {
                 isSold: true,
-                buyerId: toOid(buyerId) || buyerId,
-                buyerEmail: buyerEmail,
-                updatedAt: new Date()
-              }
+                buyerId: resolvedBuyerId,
+                buyerEmail: finalBuyerEmail,
+                soldAt: new Date(),
+                updatedAt: new Date(),
+              },
             }
           );
         }
@@ -300,36 +431,11 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
         }
       }
     } catch (error) {
-      console.error("[WEBHOOK CRITICAL ERROR]", error.message);
+      console.error("[STRIPE WEBHOOK ERROR] Order settlement error:", error.message);
     }
   }
 
   res.json({ received: true });
-});
-
-
-router.get("/my-sales", verifyToken, verifyRole(["artist"]), async (req, res) => {
-  try {
-    const db = req.app.get("db");
-    const orderCollection = db.collection("orders");
-    
-    const artistEmail = req.user.email ? req.user.email.trim().toLowerCase() : "";
-
-    console.log(`[PAYMENT LOG] Fetching sales for artist email: ${artistEmail}`);
-
-    const sales = await orderCollection
-      .find({ artistEmail: artistEmail })
-      .sort({ date: -1 })
-      .toArray();
-
-    return res.status(200).json({ success: true, data: sales });
-  } catch (err) {
-    return res.status(500).json({
-      error: true,
-      message: "Database read fault encountered while generating order ledgers.",
-      details: err.message
-    });
-  }
 });
 
 module.exports = router;

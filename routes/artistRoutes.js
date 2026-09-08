@@ -60,7 +60,7 @@ router.get("/top", async (req, res) => {
       })
     );
 
-    // মোট বিক্রির ওপর ভিত্তি করে বাছাই করে সেরা ৩ জন আর্টিস্ট রিটার্ন
+    // Sort and return top 3 artists based on total sales
     artistsWithStats.sort((a, b) => b.totalSold - a.totalSold);
 
     res.json(artistsWithStats.slice(0, 3));
@@ -96,7 +96,7 @@ router.get("/", async (req, res) => {
       .find(filter, { projection: { password: 0, hashedPassword: 0 } })
       .toArray();
 
-    // প্রতিটি আর্টিস্টের বাস্তব আর্টওয়ার্ক সংখ্যা (artworks count) ডায়নামিকভাবে বের করা
+    // Calculate artwork count dynamically for each artist
     const enrichedArtists = await Promise.all(
       artists.map(async (artist) => {
         const artistStrId = artist._id.toString();
