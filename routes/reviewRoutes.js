@@ -1,50 +1,61 @@
 const express = require("express");
-const router  = express.Router();
+const router = express.Router();
 const { ObjectId } = require("mongodb");
 const { verifyToken } = require("../middlewares");
 const { getCommentCollection } = require("../models/collections");
 
-/**
- * Utility helper to safely cast string IDs to MongoDB ObjectIds
- */
+// Utility helper to safely cast string ID to MongoDB ObjectId
 const toOid = (id) => {
-  try { return ObjectId.isValid(id) ? new ObjectId(id) : null; } catch { return null; }
+  try {
+    return ObjectId.isValid(id) ? new ObjectId(id) : null;
+  } catch {
+    return null;
+  }
 };
 
-/**
- * @route   POST /api/reviews
- * @desc    Add a standalone global interactions feedback data packet
- * @access  Private (JWT Required)
- */
+// Add a new comment/review for an artwork
 router.post("/", verifyToken, async (req, res) => {
   try {
     const commentCollection = getCommentCollection(req);
-    const { artworkId, text } = req.body;
+    const db = req.app.get("db");
+    const userCollection = db.collection("user");
+    const { artworkId, text, userName, userImage } = req.body;
 
     if (!artworkId || !text?.trim()) {
-      return res.status(400).json({ error: true, message: "Required payload markers (artworkId, text) must be provided." });
+      return res.status(400).json({ error: true, message: "Artwork ID and text are required." });
+    }
+
+    let finalUserName = userName;
+    let finalUserImage = userImage;
+
+    // Fetch user profile details if omitted from request payload
+    if (!finalUserName || !finalUserImage) {
+      const userDoc = await userCollection.findOne({ email: req.user.email });
+      if (userDoc) {
+        finalUserName = finalUserName || userDoc.name;
+        finalUserImage = finalUserImage || userDoc.image;
+      }
     }
 
     const doc = {
       artworkId,
-      userId: req.user.id,
+      userId: req.user.id || req.user._id?.toString(),
       userEmail: req.user.email,
+      userName: finalUserName || "Art Collector",
+      userImage: finalUserImage || "",
       text: text.trim(),
       createdAt: new Date(),
     };
 
     const result = await commentCollection.insertOne(doc);
-    res.status(201).json({ success: true, ...doc, _id: result.insertedId });
+    return res.status(201).json({ success: true, ...doc, _id: result.insertedId });
   } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to register feedback transaction log.", details: err.message });
+    console.error("[REVIEW ERROR] Create review error:", err.message);
+    return res.status(500).json({ error: true, message: "Failed to post review.", details: err.message });
   }
 });
 
-/**
- * @route   GET /api/reviews/:artworkId
- * @desc    Retrieve structured product interactions index feed arrays sorted by date parameters
- * @access  Public
- */
+// Fetch all reviews for a specific artwork
 router.get("/:artworkId", async (req, res) => {
   try {
     const commentCollection = getCommentCollection(req);
@@ -52,57 +63,58 @@ router.get("/:artworkId", async (req, res) => {
       .find({ artworkId: req.params.artworkId })
       .sort({ createdAt: -1 })
       .toArray();
-    res.json(reviews);
+    return res.json(reviews);
   } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to fetch interaction database listings for entity index context.", details: err.message });
+    console.error("[REVIEW ERROR] Fetch reviews error:", err.message);
+    return res.status(500).json({ error: true, message: "Failed to fetch reviews.", details: err.message });
   }
 });
 
-/**
- * @route   PUT /api/reviews/:id
- * @desc    Mutate specific logging structure contents filtered rigidly via profile identifier matching
- * @access  Private (JWT Required)
- */
+// Update an existing comment (author only)
 router.put("/:id", verifyToken, async (req, res) => {
   try {
     const commentCollection = getCommentCollection(req);
     const { text } = req.body;
     const oid = toOid(req.params.id);
 
-    if (!oid) return res.status(400).json({ error: true, message: "Invalid structurally formatted comment locator parameter id." });
+    if (!oid) return res.status(400).json({ error: true, message: "Invalid review ID." });
+    if (!text?.trim()) return res.status(400).json({ error: true, message: "Comment text cannot be empty." });
 
     const result = await commentCollection.updateOne(
       { _id: oid, userEmail: req.user.email },
       { $set: { text: text.trim(), updatedAt: new Date() } }
     );
+
     if (result.matchedCount === 0) {
-      return res.status(403).json({ error: true, message: "Target profile match missing or execution parameters blocked via unauthorized lifecycle identity context." });
+      return res.status(403).json({ error: true, message: "Review not found or unauthorized to edit." });
     }
-    res.json({ success: true, message: "Comment/Review profile metrics updated successfully inside database layer." });
+
+    return res.json({ success: true, message: "Review updated successfully." });
   } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to edit commentary database parameters.", details: err.message });
+    console.error("[REVIEW ERROR] Update review error:", err.message);
+    return res.status(500).json({ error: true, message: "Failed to edit review.", details: err.message });
   }
 });
 
-/**
- * @route   DELETE /api/reviews/:id
- * @desc    Secure core data entity drop utilizing ownership state validations
- * @access  Private (JWT Required)
- */
+// Delete a comment (author or admin)
 router.delete("/:id", verifyToken, async (req, res) => {
   try {
     const commentCollection = getCommentCollection(req);
     const oid = toOid(req.params.id);
 
-    if (!oid) return res.status(400).json({ error: true, message: "Invalid target structural comment payload tracking context parameters identification marker." });
+    if (!oid) return res.status(400).json({ error: true, message: "Invalid review ID." });
 
-    const result = await commentCollection.deleteOne({ _id: oid, userEmail: req.user.email });
+    const deleteFilter = req.user.role === "admin" ? { _id: oid } : { _id: oid, userEmail: req.user.email };
+    const result = await commentCollection.deleteOne(deleteFilter);
+
     if (result.deletedCount === 0) {
-      return res.status(403).json({ error: true, message: "Termination operation rejected: Target resource footprint missing or verification ownership constraints active." });
+      return res.status(403).json({ error: true, message: "Review not found or unauthorized to delete." });
     }
-    res.json({ success: true, message: "Review deleted successfully from ecosystem repository registers." });
+
+    return res.json({ success: true, message: "Review deleted successfully." });
   } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to execute drop procedure on target comment log records.", details: err.message });
+    console.error("[REVIEW ERROR] Delete review error:", err.message);
+    return res.status(500).json({ error: true, message: "Failed to delete review.", details: err.message });
   }
 });
 

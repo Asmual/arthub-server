@@ -91,15 +91,20 @@ router.get("/profile", verifyToken, async (req, res) => {
 router.put("/profile", verifyToken, async (req, res) => {
   try {
     const userCollection = getUserCollection(req);
-    const { name, image, bio, specialty } = req.body;
+    const { name, image, bio, specialty, speciality, phone } = req.body;
 
     const updateFields = { updatedAt: new Date() };
 
-    // Dynamic field allocations based on provided inputs
     if (name !== undefined) updateFields.name = name;
     if (image !== undefined) updateFields.image = image;
     if (bio !== undefined) updateFields.bio = bio;
-    if (specialty !== undefined) updateFields.specialty = specialty;
+    if (phone !== undefined) updateFields.phone = phone;
+
+    const finalSpecialty = specialty !== undefined ? specialty : speciality;
+    if (finalSpecialty !== undefined) {
+      updateFields.specialty = finalSpecialty;
+      updateFields.speciality = finalSpecialty;
+    }
 
     const result = await userCollection.updateOne(
       { email: req.user.email },
@@ -107,12 +112,18 @@ router.put("/profile", verifyToken, async (req, res) => {
     );
 
     if (result.matchedCount === 0) {
-      return res.status(404).json({ error: true, message: "Target profile user document not found." });
+      return res.status(404).json({ error: true, message: "User profile not found." });
     }
 
-    res.json({ success: true, message: "Profile updated successfully inside MongoDB source of truth." });
+    const updatedUser = await userCollection.findOne(
+      { email: req.user.email },
+      { projection: { password: 0, hashedPassword: 0 } }
+    );
+
+    return res.json({ success: true, message: "Profile updated successfully.", user: updatedUser });
   } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to update profile.", details: err.message });
+    console.error("[USER ERROR] Update profile error:", err.message);
+    return res.status(500).json({ error: true, message: "Failed to update profile.", details: err.message });
   }
 });
 
