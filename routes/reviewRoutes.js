@@ -59,10 +59,36 @@ router.post("/", verifyToken, async (req, res) => {
 router.get("/:artworkId", async (req, res) => {
   try {
     const commentCollection = getCommentCollection(req);
+    const db = req.app.get("db");
+    const userCollection = db.collection("user");
     const reviews = await commentCollection
       .find({ artworkId: req.params.artworkId })
       .sort({ createdAt: -1 })
       .toArray();
+
+    // Populate user profile info if missing from stored review documents
+    const missingUserEmails = reviews
+      .filter((r) => (!r.userName || !r.userImage) && r.userEmail)
+      .map((r) => r.userEmail);
+
+    if (missingUserEmails.length > 0) {
+      const users = await userCollection
+        .find({ email: { $in: missingUserEmails } })
+        .project({ name: 1, email: 1, image: 1 })
+        .toArray();
+      const userMap = new Map(users.map((u) => [u.email.toLowerCase(), u]));
+
+      reviews.forEach((r) => {
+        if (r.userEmail) {
+          const u = userMap.get(r.userEmail.toLowerCase());
+          if (u) {
+            if (!r.userName) r.userName = u.name || "Art Collector";
+            if (!r.userImage) r.userImage = u.image || "";
+          }
+        }
+      });
+    }
+
     return res.json(reviews);
   } catch (err) {
     console.error("[REVIEW ERROR] Fetch reviews error:", err.message);

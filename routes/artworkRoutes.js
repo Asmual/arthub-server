@@ -46,7 +46,33 @@ router.get("/", async (req, res) => {
     if (search?.trim() && search !== "undefined" && search !== "null") {
       const sanitizedSearch = escapeRegex(search.trim());
       const searchRegex = new RegExp(sanitizedSearch, "i");
-      finalFilter.$or = [{ title: searchRegex }, { artistName: searchRegex }];
+
+      const userCollection = getUserCollection(req);
+      const matchingArtists = await userCollection
+        .find({ $or: [{ name: searchRegex }, { email: searchRegex }] }, { projection: { _id: 1, email: 1 } })
+        .toArray();
+
+      const matchedArtistIds = matchingArtists.map((a) => a._id.toString());
+      const matchedArtistOids = matchingArtists.map((a) => a._id);
+      const matchedArtistEmails = matchingArtists.map((a) => a.email).filter(Boolean);
+
+      finalFilter.$or = [
+        { title: searchRegex },
+        { artistName: searchRegex },
+        { category: searchRegex },
+        ...(matchedArtistIds.length > 0
+          ? [
+              { userId: { $in: [...matchedArtistIds, ...matchedArtistOids] } },
+              { artistId: { $in: [...matchedArtistIds, ...matchedArtistOids] } },
+            ]
+          : []),
+        ...(matchedArtistEmails.length > 0
+          ? [
+              { artistEmail: { $in: matchedArtistEmails } },
+              { userEmail: { $in: matchedArtistEmails } },
+            ]
+          : []),
+      ];
     }
 
     if (category?.trim() && category !== "undefined" && category !== "null" && category !== "all") {
@@ -102,6 +128,83 @@ router.get("/", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: true, message: "Failed to fetch catalog artworks.", details: err.message });
+  }
+});
+
+// Search artworks dynamically by title, artist name, category, or email
+router.get("/search", async (req, res) => {
+  try {
+    const artworkCollection = getArtworkCollection(req);
+    const userCollection = getUserCollection(req);
+    const query = (req.query.query || req.query.q || req.query.search || "").trim();
+
+    if (!query || query === "undefined" || query === "null") {
+      return res.json([]);
+    }
+
+    const sanitizedQuery = escapeRegex(query);
+    const regex = new RegExp(sanitizedQuery, "i");
+
+    // Match artist profiles from user collection
+    const matchingArtists = await userCollection
+      .find(
+        { $or: [{ name: regex }, { email: regex }] },
+        { projection: { _id: 1, name: 1, image: 1, email: 1 } }
+      )
+      .toArray();
+
+    const matchedArtistIds = matchingArtists.map((a) => a._id.toString());
+    const matchedArtistOids = matchingArtists.map((a) => a._id);
+    const matchedArtistEmails = matchingArtists.map((a) => a.email).filter(Boolean);
+
+    const filter = {
+      isDraft: { $ne: true },
+      $or: [
+        { title: regex },
+        { artistName: regex },
+        { category: regex },
+        ...(matchedArtistIds.length > 0
+          ? [
+              { userId: { $in: [...matchedArtistIds, ...matchedArtistOids] } },
+              { artistId: { $in: [...matchedArtistIds, ...matchedArtistOids] } },
+            ]
+          : []),
+        ...(matchedArtistEmails.length > 0
+          ? [
+              { artistEmail: { $in: matchedArtistEmails } },
+              { userEmail: { $in: matchedArtistEmails } },
+            ]
+          : []),
+      ],
+    };
+
+    const artworks = await artworkCollection
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .toArray();
+
+    // Ensure artist name is populated on matching items
+    const populated = await Promise.all(
+      artworks.map(async (art) => {
+        if (!art.artistName && (art.userId || art.artistId)) {
+          const rawId = art.userId || art.artistId;
+          const uOid = toOid(rawId);
+          const artistDoc = await userCollection.findOne({
+            $or: [{ _id: uOid }, { id: rawId }],
+          });
+          if (artistDoc) {
+            art.artistName = artistDoc.name;
+          }
+        }
+        return art;
+      })
+    );
+
+    return res.json(populated);
+  } catch (err) {
+    console.error("[ARTWORK SEARCH ERROR]", err.message);
+    return res.status(500).json({ error: true, message: "Search failed.", details: err.message });
   }
 });
 
