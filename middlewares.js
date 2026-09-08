@@ -9,7 +9,7 @@ async function verifyToken(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      console.warn("[AUTH WARN] Token verification triggered but Authorization Header header is malformed or absent.");
+      console.warn("[AUTH WARN] Token verification triggered but Authorization Header is malformed or absent.");
       return res.status(401).json({
         error: true,
         message: "Unauthorized: No token provided.",
@@ -17,8 +17,17 @@ async function verifyToken(req, res, next) {
     }
 
     const token = authHeader.split(" ")[1];
+    const jwtSecret = process.env.JWT_SECRET || process.env.BETTER_AUTH_SECRET;
 
-    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (!jwtSecret) {
+      console.error("[AUTH CRITICAL ERROR] JWT secret key is not configured in server environment.");
+      return res.status(500).json({
+        error: true,
+        message: "Internal Authentication Error: JWT secret not configured.",
+      });
+    }
+
+    jwt.verify(token, jwtSecret, (err, decoded) => {
       if (err) {
         console.error(`[AUTH ERROR] JWT Verification failed runtime handshake: ${err.message}`);
         return res.status(403).json({
@@ -70,15 +79,21 @@ function verifyRole(allowedRoles = []) {
         });
       }
 
-      if (!allowedRoles.includes(liveUser.role)) {
-        console.warn(`[AUTH RBAC Forbidden] Privileges insufficient for user: ${req.user.email}. Required: ${allowedRoles}, Found: ${liveUser.role}`);
+      const userRole = liveUser.role || "user";
+      // Normalize allowed roles to handle both "user" and "buyer" equivalents
+      const normalizedAllowed = allowedRoles.flatMap((r) =>
+        r === "user" || r === "buyer" ? ["user", "buyer"] : [r]
+      );
+
+      if (!normalizedAllowed.includes(userRole)) {
+        console.warn(`[AUTH RBAC Forbidden] Privileges insufficient for user: ${req.user.email}. Required: ${allowedRoles}, Found: ${userRole}`);
         return res.status(403).json({
           error: true,
           message: "Forbidden: Insufficient platform account privileges.",
         });
       }
 
-      req.user.role = liveUser.role;
+      req.user.role = userRole;
       req.user._id = liveUser._id; // Attach actual MongoDB ObjectId instance
 
       next();

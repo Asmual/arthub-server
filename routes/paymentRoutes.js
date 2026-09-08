@@ -12,7 +12,6 @@ const toOid = (id) => {
   }
 };
 
-// ১. অল ট্রানজেকশন রাউট
 router.get("/all-transactions", verifyToken, async (req, res) => {
   try {
     console.log(`[PAYMENT LOG] Fetching all transactions. Initiator: ${req.user.email}`);
@@ -38,7 +37,7 @@ router.get("/all-transactions", verifyToken, async (req, res) => {
   }
 });
 
-// ২. মাই অর্ডারস রাউট
+
 router.get("/my-orders", verifyToken, async (req, res) => {
   try {
     console.log(`[PAYMENT LOG] Fetching orders for user: ${req.user.email}`);
@@ -62,7 +61,6 @@ router.get("/my-orders", verifyToken, async (req, res) => {
   }
 });
 
-// ৩. ক্রিয়েট চেকআউট সেশন রাউট
 router.post("/create-checkout-session", verifyToken, async (req, res) => {
   try {
     const db = req.app.get("db");
@@ -112,7 +110,7 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
         },
       ],
       success_url: `${clientBaseUrl}/dashboard/user?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${clientBaseUrl}/artwork/${artworkId}`,
+      cancel_url: `${clientBaseUrl}/browse/${artworkId}`,
       metadata: {
         artworkId: artworkId.toString(),
         buyerId: buyerId,
@@ -128,13 +126,13 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
   }
 });
 
-// ৪. ভেরিফাই পেমেন্ট সিঙ্ক রাউট
 router.post("/verify-payment-sync", verifyToken, async (req, res) => {
   const { sessionId } = req.body;
   try {
     const db = req.app.get("db");
     const orderCollection = db.collection("orders");
     const userCollection = db.collection("user");
+    const artworkCollection = db.collection("artworks");
 
     const session = await stripe.checkout.sessions.retrieve(sessionId);
    
@@ -142,32 +140,75 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
       return res.status(400).json({ success: false, message: "Unverified transaction settlement clearance profile tracked." });
     }
 
-    const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata;
+    const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata || {};
 
     const existingOrder = await orderCollection.findOne({ transactionId: session.id });
     if (existingOrder) {
       return res.status(200).json({ success: true, message: "Transaction maps already integrated." });
     }
 
+    const artworkOid = toOid(artworkId);
+    const artworkDoc = artworkOid
+      ? await artworkCollection.findOne({ $or: [{ _id: artworkOid }, { _id: artworkId }] })
+      : await artworkCollection.findOne({ _id: artworkId });
+
+    const finalArtistEmail = (artistEmail || artworkDoc?.artistEmail || "").trim().toLowerCase();
+
     const structuredOrderPayload = {
       transactionId: session.id,
       type: "purchase",
-      artworkId: toOid(artworkId) || artworkId,
-      artworkTitle: artworkTitle,
+      artworkId: artworkDoc ? artworkDoc._id : (artworkOid || artworkId),
+      artworkTitle: artworkTitle || artworkDoc?.title || "Original Artwork",
+      artworkImage: artworkDoc?.image || "",
+      artworkDetails: artworkDoc ? {
+        _id: artworkDoc._id,
+        title: artworkDoc.title,
+        image: artworkDoc.image,
+        price: artworkDoc.price,
+        category: artworkDoc.category,
+        artistName: artworkDoc.artistName,
+        artistEmail: artworkDoc.artistEmail
+      } : null,
       buyerId: toOid(buyerId) || buyerId,
       buyerEmail: buyerEmail,
-      artistEmail: artistEmail ? artistEmail.trim().toLowerCase() : "",
+      artistEmail: finalArtistEmail,
       amount: session.amount_total / 100,
+      price: session.amount_total / 100,
+      status: "paid",
       date: new Date(),
       createdAt: new Date()
     };
 
     await orderCollection.insertOne(structuredOrderPayload);
 
+    // Update buyer purchase counter
     await userCollection.updateOne(
       { email: buyerEmail },
       { $inc: { purchasesCount: 1 } }
     );
+
+    // Mark artwork as sold
+    if (artworkDoc) {
+      await artworkCollection.updateOne(
+        { _id: artworkDoc._id },
+        {
+          $set: {
+            isSold: true,
+            buyerId: toOid(buyerId) || buyerId,
+            buyerEmail: buyerEmail,
+            updatedAt: new Date()
+          }
+        }
+      );
+    }
+
+    // Increment artist sales counter
+    if (finalArtistEmail) {
+      await userCollection.updateOne(
+        { email: finalArtistEmail },
+        { $inc: { totalSold: 1 } }
+      );
+    }
 
     return res.status(200).json({ success: true, message: "Stripe data metrics successfully integrated." });
   } catch (error) {
@@ -175,7 +216,6 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
   }
 });
 
-// ৫. স্ট্রাইপ ওয়েবহুক রাউট
 router.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
@@ -192,21 +232,41 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
     const db = req.app.get("db");
     const orderCollection = db.collection("orders");
     const userCollection = db.collection("user");
+    const artworkCollection = db.collection("artworks");
 
     try {
-      const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata;
+      const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata || {};
       const existingOrder = await orderCollection.findOne({ transactionId: session.id });
      
       if (!existingOrder) {
+        const artworkOid = toOid(artworkId);
+        const artworkDoc = artworkOid
+          ? await artworkCollection.findOne({ $or: [{ _id: artworkOid }, { _id: artworkId }] })
+          : await artworkCollection.findOne({ _id: artworkId });
+
+        const finalArtistEmail = (artistEmail || artworkDoc?.artistEmail || "").trim().toLowerCase();
+
         const structuredOrderPayload = {
           transactionId: session.id,
           type: "purchase",
-          artworkId: toOid(artworkId) || artworkId,
-          artworkTitle: artworkTitle,
+          artworkId: artworkDoc ? artworkDoc._id : (artworkOid || artworkId),
+          artworkTitle: artworkTitle || artworkDoc?.title || "Original Artwork",
+          artworkImage: artworkDoc?.image || "",
+          artworkDetails: artworkDoc ? {
+            _id: artworkDoc._id,
+            title: artworkDoc.title,
+            image: artworkDoc.image,
+            price: artworkDoc.price,
+            category: artworkDoc.category,
+            artistName: artworkDoc.artistName,
+            artistEmail: artworkDoc.artistEmail
+          } : null,
           buyerId: toOid(buyerId) || buyerId,
           buyerEmail: buyerEmail,
-          artistEmail: artistEmail ? artistEmail.trim().toLowerCase() : "",
+          artistEmail: finalArtistEmail,
           amount: session.amount_total / 100,
+          price: session.amount_total / 100,
+          status: "paid",
           date: new Date(),
           createdAt: new Date()
         };
@@ -217,6 +277,27 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
           { email: buyerEmail },
           { $inc: { purchasesCount: 1 } }
         );
+
+        if (artworkDoc) {
+          await artworkCollection.updateOne(
+            { _id: artworkDoc._id },
+            {
+              $set: {
+                isSold: true,
+                buyerId: toOid(buyerId) || buyerId,
+                buyerEmail: buyerEmail,
+                updatedAt: new Date()
+              }
+            }
+          );
+        }
+
+        if (finalArtistEmail) {
+          await userCollection.updateOne(
+            { email: finalArtistEmail },
+            { $inc: { totalSold: 1 } }
+          );
+        }
       }
     } catch (error) {
       console.error("[WEBHOOK CRITICAL ERROR]", error.message);

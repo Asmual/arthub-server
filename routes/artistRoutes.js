@@ -33,7 +33,6 @@ router.get("/top", async (req, res) => {
       .project({ password: 0, hashedPassword: 0 })
       .toArray();
 
-    // ডায়নামিকভাবে প্রতিটি আর্টিস্টের মোট আর্টওয়ার্ক এবং মোট সেলস গণনা করা
     const artistsWithStats = await Promise.all(
       artists.map(async (artist) => {
         const artistStrId = artist._id.toString();

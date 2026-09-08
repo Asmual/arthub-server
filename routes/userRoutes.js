@@ -35,18 +35,26 @@ router.post("/generate-token", async (req, res) => {
       return res.status(404).json({ error: true, message: "User not found in application database." });
     }
 
+    const jwtSecret = process.env.JWT_SECRET || process.env.BETTER_AUTH_SECRET;
+    if (!jwtSecret) {
+      console.error("[AUTH CRITICAL ERROR] JWT secret is not configured in server environment.");
+      return res.status(500).json({ error: true, message: "Token generation failed: JWT secret not configured." });
+    }
+
+    const assignedRole = user.role || "user";
+
     // Sign JWT with payload containing id, email, and role
     const token = jwt.sign(
       { 
         id: user._id?.toString() || user.id, 
         email: user.email, 
-        role: user.role 
+        role: assignedRole 
       },
-      process.env.JWT_SECRET,
+      jwtSecret,
       { expiresIn: "7d" }
     );
 
-    res.json({ success: true, token, role: user.role });
+    res.json({ success: true, token, role: assignedRole });
   } catch (err) {
     res.status(500).json({ error: true, message: "Token generation failed.", details: err.message });
   }
