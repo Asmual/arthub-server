@@ -60,10 +60,10 @@ router.get("/top", async (req, res) => {
       })
     );
 
-    // Sort and return top 3 artists based on total sales
+    // Sort and return top 4 artists based on total sales
     artistsWithStats.sort((a, b) => b.totalSold - a.totalSold);
 
-    res.json(artistsWithStats.slice(0, 3));
+    res.json(artistsWithStats.slice(0, 4));
   } catch (err) {
     res.status(500).json({ error: true, message: "Failed to compile top tier artist rosters.", details: err.message });
   }
