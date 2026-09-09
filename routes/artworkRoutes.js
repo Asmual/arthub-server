@@ -28,9 +28,17 @@ router.get("/featured", async (req, res) => {
     const artworkCollection = getArtworkCollection(req);
     const artworks = await artworkCollection.aggregate([
       { $match: { isDraft: { $ne: true } } },
-      { $sample: { size: 6 } },
+      { $sample: { size: 8 } },
     ]).toArray();
-    res.json(artworks);
+    const normalized = artworks.map((art) => {
+      const stock = typeof art.quantity === "number" ? art.quantity : 10;
+      return {
+        ...art,
+        quantity: stock,
+        isSold: stock === 0,
+      };
+    });
+    res.json(normalized);
   } catch (err) {
     res.status(500).json({ error: true, message: "Failed to fetch featured artworks.", details: err.message });
   }
@@ -120,8 +128,17 @@ router.get("/", async (req, res) => {
       .limit(currentLimit)
       .toArray();
 
+    const normalizedArtworks = artworks.map((art) => {
+      const stock = typeof art.quantity === "number" ? art.quantity : 10;
+      return {
+        ...art,
+        quantity: stock,
+        isSold: stock === 0,
+      };
+    });
+
     res.json({
-      artworks,
+      artworks: normalizedArtworks,
       total,
       page: currentPage,
       totalPages: Math.ceil(total / currentLimit),
@@ -247,10 +264,64 @@ router.get("/:id", async (req, res) => {
       artwork.artistName = artwork.artistDetails.name || artwork.artistName;
       artwork.artistImage = artwork.artistDetails.image || "";
     }
+    const stock = typeof artwork.quantity === "number" ? artwork.quantity : 10;
+    artwork.quantity = stock;
+    artwork.isSold = stock === 0;
 
     res.json(artwork);
   } catch (err) {
     res.status(500).json({ error: true, message: "Failed to fetch distinct artwork asset metrics.", details: err.message });
+  }
+});
+
+router.post("/sync-stock", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
+  try {
+    const artworkCollection = getArtworkCollection(req);
+    const result = await artworkCollection.updateMany(
+      { $or: [{ quantity: { $exists: false } }, { quantity: null }, { isSold: true }] },
+      { $set: { quantity: 10, isSold: false, updatedAt: new Date() } }
+    );
+    res.json({ success: true, message: "Artworks stock synchronized successfully.", modifiedCount: result.modifiedCount });
+  } catch (err) {
+    res.status(500).json({ error: true, message: "Failed to synchronize stock.", details: err.message });
+  }
+});
+
+router.patch("/:id/stock", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
+  try {
+    const artworkCollection = getArtworkCollection(req);
+    const oid = toOid(req.params.id);
+    const { delta, quantity } = req.body;
+
+    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
+    if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork listing not found." });
+
+    if (existingArtwork.userId !== req.user.id && req.user.role !== "admin") {
+      return res.status(403).json({ error: true, message: "Forbidden: Ownership mapping validation mismatch." });
+    }
+
+    let newQuantity;
+    if (typeof quantity === "number") {
+      newQuantity = Math.max(0, quantity);
+    } else if (typeof delta === "number") {
+      const currentQty = typeof existingArtwork.quantity === "number" ? existingArtwork.quantity : 10;
+      newQuantity = Math.max(0, currentQty + delta);
+    } else {
+      return res.status(400).json({ error: true, message: "Provide delta or quantity." });
+    }
+
+    const isSold = newQuantity === 0;
+
+    const result = await artworkCollection.findOneAndUpdate(
+      { _id: existingArtwork._id },
+      { $set: { quantity: newQuantity, isSold, updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+
+    const updatedDoc = result && result.value ? result.value : result;
+    res.json({ success: true, data: updatedDoc });
+  } catch (err) {
+    res.status(500).json({ error: true, message: "Failed to update artwork stock.", details: err.message });
   }
 });
 
@@ -288,6 +359,9 @@ router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) 
     if (currentTier === "pro" && totalExistingArtworks >= 9) {
       return res.status(403).json({ error: true, message: "Tier limit exceeded. Pro tier profiles are limited to 9 listings." });
     }
+
+    const initialQty = req.body.quantity !== undefined ? Math.max(0, parseInt(req.body.quantity, 10)) : 10;
+    const resolvedQty = isNaN(initialQty) ? 10 : initialQty;
    
     const doc = {
       title,
@@ -295,10 +369,11 @@ router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) 
       category: category || "Uncategorized",
       image,
       price: Number(price),
+      quantity: resolvedQty,
       userId: req.user.id,
       artistEmail: req.user.email,
       artistName: artistProfile.name || "Anonymous Artist",
-      isSold: false,
+      isSold: resolvedQty === 0,
       isDraft: false,
       createdAt: new Date(),
     };
@@ -335,7 +410,17 @@ router.put("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res
     if (category !== undefined) updatePayload.category = category;
     if (image !== undefined) updatePayload.image = image;
     if (price !== undefined) updatePayload.price = Number(price);
-    if (isSold !== undefined) updatePayload.isSold = Boolean(isSold);
+
+    if (req.body.quantity !== undefined) {
+      const parsedQty = Math.max(0, parseInt(req.body.quantity, 10));
+      updatePayload.quantity = isNaN(parsedQty) ? 0 : parsedQty;
+      updatePayload.isSold = updatePayload.quantity === 0;
+    } else if (isSold !== undefined) {
+      updatePayload.isSold = Boolean(isSold);
+      if (updatePayload.isSold) {
+        updatePayload.quantity = 0;
+      }
+    }
 
     const result = await artworkCollection.findOneAndUpdate(
       { _id: existingArtwork._id },

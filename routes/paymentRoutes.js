@@ -172,13 +172,16 @@ router.post("/verify-payment-sync", verifyToken, async (req, res) => {
       );
     }
 
-    // Mark artwork as sold
+    // Decrement artwork stock and update status
     if (artworkDoc) {
+      const currentQty = typeof artworkDoc.quantity === "number" ? artworkDoc.quantity : 1;
+      const newQty = Math.max(0, currentQty - 1);
       await artworkCollection.updateOne(
         { _id: artworkDoc._id },
         {
           $set: {
-            isSold: true,
+            quantity: newQty,
+            isSold: newQty === 0,
             buyerId: resolvedBuyerId,
             buyerEmail: finalBuyerEmail,
             soldAt: new Date(),

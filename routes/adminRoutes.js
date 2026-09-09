@@ -119,13 +119,77 @@ router.get("/artworks", async (req, res) => {
       .sort({ createdAt: -1 })
       .toArray();
 
-    res.status(200).json(artworks);
+    const normalized = artworks.map((art) => {
+      const stock = typeof art.quantity === "number" ? art.quantity : 10;
+      return {
+        ...art,
+        quantity: stock,
+        isSold: stock === 0,
+      };
+    });
+
+    res.status(200).json(normalized);
   } catch (err) {
     res.status(500).json({
       error: true,
       message: "Failed to fetch platform art marketplace listings.",
       details: err.message,
     });
+  }
+});
+
+/**
+ * @route   PATCH /api/admin/artworks/:id/stock
+ * @desc    Adjust or set stock quantity for any artwork on the platform
+ */
+router.patch("/artworks/:id/stock", async (req, res) => {
+  try {
+    const artworkCollection = getArtworkCollection(req);
+    const oid = toOid(req.params.id);
+    const { delta, quantity } = req.body;
+
+    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
+    if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork not found." });
+
+    let newQuantity;
+    if (typeof quantity === "number") {
+      newQuantity = Math.max(0, quantity);
+    } else if (typeof delta === "number") {
+      const currentQty = typeof existingArtwork.quantity === "number" ? existingArtwork.quantity : 10;
+      newQuantity = Math.max(0, currentQty + delta);
+    } else {
+      return res.status(400).json({ error: true, message: "Quantity or delta must be provided." });
+    }
+
+    const isSold = newQuantity === 0;
+
+    const result = await artworkCollection.findOneAndUpdate(
+      { _id: existingArtwork._id },
+      { $set: { quantity: newQuantity, isSold, updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+
+    const updated = result && result.value ? result.value : result;
+    res.status(200).json({ success: true, data: updated });
+  } catch (err) {
+    res.status(500).json({ error: true, message: "Failed to update artwork stock.", details: err.message });
+  }
+});
+
+/**
+ * @route   POST /api/admin/artworks/reset-stock
+ * @desc    Initialize all artworks to have stock quantity = 10 and isSold = false
+ */
+router.post("/artworks/reset-stock", async (req, res) => {
+  try {
+    const artworkCollection = getArtworkCollection(req);
+    const result = await artworkCollection.updateMany(
+      { $or: [{ quantity: { $exists: false } }, { quantity: null }, { isSold: true }] },
+      { $set: { quantity: 10, isSold: false, updatedAt: new Date() } }
+    );
+    res.status(200).json({ success: true, modifiedCount: result.modifiedCount });
+  } catch (err) {
+    res.status(500).json({ error: true, message: "Failed to reset artwork stock.", details: err.message });
   }
 });
 
