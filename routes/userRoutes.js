@@ -120,6 +120,26 @@ router.put("/profile", verifyToken, async (req, res) => {
       { projection: { password: 0, hashedPassword: 0 } }
     );
 
+    // Sync artist image and name across their artworks
+    const db = req.app.get("db");
+    if (db && (image !== undefined || name !== undefined)) {
+      const artworkUpdate = {};
+      if (image !== undefined) artworkUpdate.artistImage = image;
+      if (name !== undefined) artworkUpdate.artistName = name;
+      const userIdStr = updatedUser?._id?.toString();
+      await db.collection("artworks").updateMany(
+        {
+          $or: [
+            { artistEmail: req.user.email },
+            { artistEmail: req.user.email.toLowerCase() },
+            { userEmail: req.user.email },
+            ...(userIdStr ? [{ userId: userIdStr }, { artistId: userIdStr }] : []),
+          ],
+        },
+        { $set: artworkUpdate }
+      );
+    }
+
     return res.json({ success: true, message: "Profile updated successfully.", user: updatedUser });
   } catch (err) {
     console.error("[USER ERROR] Update profile error:", err.message);

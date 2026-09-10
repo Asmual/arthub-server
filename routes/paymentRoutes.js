@@ -25,8 +25,8 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
   try {
     const db = req.app.get("db");
     const artworkCollection = db.collection("artworks");
-    const { artworkId, price } = req.body;
-    const userEmail = req.user.email;
+    const { artworkId, price, name, email, phone } = req.body;
+    const userEmail = (email && typeof email === "string" && email.includes("@")) ? email.trim() : req.user.email;
     const buyerId = req.user.id || req.user._id?.toString();
 
     if (!artworkId || !ObjectId.isValid(artworkId)) {
@@ -87,6 +87,8 @@ router.post("/create-checkout-session", verifyToken, async (req, res) => {
         artworkId: artworkId.toString(),
         buyerId: buyerId ? buyerId.toString() : "",
         buyerEmail: userEmail,
+        buyerName: name?.trim() || req.user.name || "",
+        buyerPhone: phone?.trim() || "",
         artworkTitle: artwork.title || "Original Artwork",
         artistEmail: artistEmail,
         price: String(price || artwork.price),
