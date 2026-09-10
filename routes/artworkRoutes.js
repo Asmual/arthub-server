@@ -344,21 +344,31 @@ router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) 
       return res.status(404).json({ error: true, message: "Associated platform artist identity record missing." });
     }
 
-    const currentTier = artistProfile.subscriptionTier || "free";
+    const currentTier = (artistProfile.plan || artistProfile.subscription?.plan || artistProfile.subscriptionTier || "free").toLowerCase();
    
     const totalExistingArtworks = await artworkCollection.countDocuments({
       $or: [
         { userId: req.user.id },
-        { userId: toOid(req.user.id) }
+        { userId: toOid(req.user.id) },
+        { artistEmail: req.user.email },
+        { userEmail: req.user.email },
       ]
     });
 
-    if (currentTier === "free" && totalExistingArtworks >= 3) {
-      return res.status(403).json({ error: true, message: "Tier limit exceeded. Free tier profiles are limited to 3 listings." });
+    const TIER_LIMITS = { free: 5, basic: 20, pro: 60, ultimate: Infinity };
+    const maxAllowed = TIER_LIMITS[currentTier] ?? 5;
+
+    if (maxAllowed !== Infinity && totalExistingArtworks >= maxAllowed) {
+      return res.status(403).json({
+        error: true,
+        code: "PLAN_LIMIT_REACHED",
+        message: `Tier limit exceeded. ${currentTier.toUpperCase()} tier profiles are limited to ${maxAllowed} artworks. Please upgrade to a higher plan to add more.`,
+        currentCount: totalExistingArtworks,
+        limit: maxAllowed,
+        plan: currentTier,
+      });
     }
-    if (currentTier === "pro" && totalExistingArtworks >= 9) {
-      return res.status(403).json({ error: true, message: "Tier limit exceeded. Pro tier profiles are limited to 9 listings." });
-    }
+
 
     const initialQty = req.body.quantity !== undefined ? Math.max(0, parseInt(req.body.quantity, 10)) : 10;
     const resolvedQty = isNaN(initialQty) ? 10 : initialQty;

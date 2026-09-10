@@ -11,8 +11,10 @@ const reviewRoutes = require("./routes/reviewRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const userRoutes = require("./routes/userRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const subscriptionRoutes = require("./routes/subscriptionRoutes");
 
 const app = express();
+
 const port = process.env.PORT || 5000;
 
 const allowedOrigins = [
@@ -60,6 +62,8 @@ async function startServer() {
     app.use("/api/payment", paymentRoutes);
     app.use("/api/users", userRoutes);
     app.use("/api/admin", adminRoutes);
+    app.use("/api/subscription", subscriptionRoutes);
+
    
     // Global Centralized Fail-Safe Exception Catchment Endpoint Setup
     app.use((err, req, res, next) => {
