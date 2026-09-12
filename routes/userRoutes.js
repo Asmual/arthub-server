@@ -213,4 +213,63 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+/**
+ * @route   POST /api/users/upgrade-to-artist
+ * @desc    Upgrade user account role to artist in database
+ * @access  Public / Authenticated
+ */
+router.post("/upgrade-to-artist", async (req, res) => {
+  try {
+    const { email } = req.body;
+    const targetEmail = email || req.user?.email;
+
+    if (!targetEmail) {
+      return res.status(400).json({ error: true, message: "User email is required to upgrade role." });
+    }
+
+    const userCollection = getUserCollection(req);
+    const db = req.app.get("db");
+
+    const user = await userCollection.findOne({ email: targetEmail });
+    if (!user) {
+      return res.status(404).json({ error: true, message: "User account not found." });
+    }
+
+    const now = new Date();
+    const updateFields = {
+      role: "artist",
+      updatedAt: now,
+    };
+
+    if (!user.plan && !user.subscription?.plan) {
+      updateFields.plan = "free";
+      updateFields.subscription = {
+        plan: "free",
+        status: "active",
+        interval: "free",
+        amount: 0,
+        artLimit: 5,
+        activatedAt: now,
+        updatedAt: now,
+      };
+    }
+
+    await userCollection.updateOne({ email: targetEmail }, { $set: updateFields });
+
+    const usersCol = db.collection("users");
+    if (usersCol) {
+      await usersCol.updateOne({ email: targetEmail }, { $set: updateFields });
+    }
+
+    res.json({
+      success: true,
+      message: "Account upgraded to artist successfully.",
+      role: "artist",
+    });
+  } catch (err) {
+    console.error("[USER ROUTES ERROR] upgrade-to-artist:", err);
+    res.status(500).json({ error: true, message: "Failed to upgrade account to artist.", details: err.message });
+  }
+});
+
 module.exports = router;

@@ -51,6 +51,19 @@ router.post("/create-checkout-session", async (req, res) => {
       return res.status(401).json({ error: true, message: "User email is required for checkout." });
     }
 
+    // Role check: Only Artists (and Admins) may purchase artist subscription packages
+    const db = req.app.get("db");
+    const user = (await db.collection("user").findOne({ email: userEmail })) ||
+                 (await db.collection("users").findOne({ email: userEmail }));
+
+    if (user && user.role !== "artist" && user.role !== "admin") {
+      return res.status(403).json({
+        error: true,
+        requiresArtistUpgrade: true,
+        message: "Subscription packages are exclusively for Artist accounts. Please upgrade your account to an Artist profile before purchasing.",
+      });
+    }
+
     const normalizedPlan = (plan || "").toLowerCase();
     const config = PLAN_CONFIGS[normalizedPlan];
 
@@ -155,6 +168,7 @@ router.post("/verify-session", async (req, res) => {
       { email: artistEmail },
       {
         $set: {
+          role: "artist",
           plan: plan.toLowerCase(),
           subscription: subscriptionRecord,
           subscriptionTier: plan.toLowerCase(),
@@ -170,6 +184,7 @@ router.post("/verify-session", async (req, res) => {
         { email: artistEmail },
         {
           $set: {
+            role: "artist",
             plan: plan.toLowerCase(),
             subscription: subscriptionRecord,
             subscriptionTier: plan.toLowerCase(),
