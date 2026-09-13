@@ -12,6 +12,7 @@ const paymentRoutes = require("./routes/paymentRoutes");
 const userRoutes = require("./routes/userRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const subscriptionRoutes = require("./routes/subscriptionRoutes");
+const aiRoutes = require("./routes/aiRoutes");
 
 const app = express();
 
@@ -63,6 +64,7 @@ async function startServer() {
     app.use("/api/users", userRoutes);
     app.use("/api/admin", adminRoutes);
     app.use("/api/subscription", subscriptionRoutes);
+    app.use("/api/ai", aiRoutes);
 
    
     // Global Centralized Fail-Safe Exception Catchment Endpoint Setup
