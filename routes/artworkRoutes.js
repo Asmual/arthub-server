@@ -308,6 +308,22 @@ router.post("/sync-stock", verifyToken, verifyRole(["artist", "admin"]), async (
   }
 });
 
+const verifyArtworkOwnership = (artwork, user) => {
+  if (!artwork || !user) return false;
+  if (user.role === "admin") return true;
+
+  const userIdStr = user.id?.toString();
+  const userEmailLower = user.email?.toLowerCase().trim();
+
+  if (artwork.userId && (artwork.userId.toString() === userIdStr)) return true;
+  if (artwork.artistId && (artwork.artistId.toString() === userIdStr)) return true;
+  if (artwork.artistEmail && artwork.artistEmail.toLowerCase().trim() === userEmailLower) return true;
+  if (artwork.userEmail && artwork.userEmail.toLowerCase().trim() === userEmailLower) return true;
+  if (artwork.email && artwork.email.toLowerCase().trim() === userEmailLower) return true;
+
+  return false;
+};
+
 router.patch("/:id/stock", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
   try {
     const artworkCollection = getArtworkCollection(req);
@@ -317,25 +333,26 @@ router.patch("/:id/stock", verifyToken, verifyRole(["artist", "admin"]), async (
     const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
     if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork listing not found." });
 
-    if (existingArtwork.userId !== req.user.id && req.user.role !== "admin") {
-      return res.status(403).json({ error: true, message: "Forbidden: Ownership mapping validation mismatch." });
+    if (!verifyArtworkOwnership(existingArtwork, req.user)) {
+      return res.status(403).json({ error: true, message: "Forbidden: You can only adjust stock for your own artworks." });
     }
 
     let newQuantity;
     if (typeof quantity === "number") {
       newQuantity = Math.max(0, quantity);
     } else if (typeof delta === "number") {
-      const currentQty = typeof existingArtwork.quantity === "number" ? existingArtwork.quantity : 10;
+      const currentQty = typeof existingArtwork.quantity === "number" ? existingArtwork.quantity : (existingArtwork.isSold ? 0 : 10);
       newQuantity = Math.max(0, currentQty + delta);
     } else {
       return res.status(400).json({ error: true, message: "Provide delta or quantity." });
     }
 
     const isSold = newQuantity === 0;
+    const status = isSold ? "sold" : "available";
 
     const result = await artworkCollection.findOneAndUpdate(
       { _id: existingArtwork._id },
-      { $set: { quantity: newQuantity, isSold, updatedAt: new Date() } },
+      { $set: { quantity: newQuantity, isSold, status, updatedAt: new Date() } },
       { returnDocument: "after" }
     );
 
@@ -391,8 +408,8 @@ router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) 
     }
 
 
-    const initialQty = req.body.quantity !== undefined ? Math.max(0, parseInt(req.body.quantity, 10)) : 10;
-    const resolvedQty = isNaN(initialQty) ? 10 : initialQty;
+    const initialQty = req.body.quantity !== undefined ? Math.max(0, parseInt(req.body.quantity, 10)) : 1;
+    const resolvedQty = isNaN(initialQty) ? 1 : initialQty;
    
     const doc = {
       title,
@@ -402,9 +419,11 @@ router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) 
       price: Number(price),
       quantity: resolvedQty,
       userId: req.user.id,
+      artistId: req.user.id,
       artistEmail: req.user.email,
       artistName: artistProfile.name || "Anonymous Artist",
       isSold: resolvedQty === 0,
+      status: resolvedQty === 0 ? "sold" : "available",
       isDraft: false,
       createdAt: new Date(),
     };
@@ -425,7 +444,7 @@ router.put("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res
     const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
     if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork listing profile target missing." });
 
-    if (existingArtwork.userId !== req.user.id && req.user.role !== "admin") {
+    if (!verifyArtworkOwnership(existingArtwork, req.user)) {
       return res.status(403).json({ error: true, message: "Forbidden: Ownership mapping validation mismatch." });
     }
 
@@ -446,10 +465,17 @@ router.put("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res
       const parsedQty = Math.max(0, parseInt(req.body.quantity, 10));
       updatePayload.quantity = isNaN(parsedQty) ? 0 : parsedQty;
       updatePayload.isSold = updatePayload.quantity === 0;
+      updatePayload.status = updatePayload.isSold ? "sold" : "available";
     } else if (isSold !== undefined) {
       updatePayload.isSold = Boolean(isSold);
       if (updatePayload.isSold) {
         updatePayload.quantity = 0;
+        updatePayload.status = "sold";
+      } else {
+        updatePayload.status = "available";
+        if (existingArtwork.quantity === 0 || !existingArtwork.quantity) {
+          updatePayload.quantity = 1;
+        }
       }
     }
 
@@ -474,7 +500,7 @@ router.delete("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, 
     const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
     if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork catalog item target missing." });
 
-    if (existingArtwork.userId !== req.user.id && req.user.role !== "admin") {
+    if (!verifyArtworkOwnership(existingArtwork, req.user)) {
       return res.status(403).json({ error: true, message: "Forbidden: Ownership profile verification barrier." });
     }
 
