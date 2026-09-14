@@ -77,6 +77,44 @@ router.patch("/users/:id/role", async (req, res) => {
 });
 
 /**
+ * @route   PATCH /api/admin/users/:id/status
+ * @desc    Block or unblock a user/artist
+ */
+router.patch("/users/:id/status", async (req, res) => {
+  try {
+    const userCollection = getUserCollection(req);
+    const oid = toOid(req.params.id);
+    const { isBlocked } = req.body;
+
+    const blockedFlag = Boolean(isBlocked);
+    const result = await userCollection.findOneAndUpdate(
+      { $or: [{ _id: oid }, { id: req.params.id }] },
+      {
+        $set: {
+          isBlocked: blockedFlag,
+          status: blockedFlag ? "blocked" : "active",
+          updatedAt: new Date(),
+        },
+      },
+      { returnDocument: "after" }
+    );
+
+    const updatedUser = result && result.value ? result.value : result;
+    if (!updatedUser) {
+      return res.status(404).json({ error: true, message: "User not found." });
+    }
+
+    res.status(200).json({ success: true, user: updatedUser });
+  } catch (err) {
+    res.status(500).json({
+      error: true,
+      message: "Failed to update user status.",
+      details: err.message,
+    });
+  }
+});
+
+/**
  * @route   DELETE /api/admin/users/:id
  * @desc    Purge specific target profile document from master user collection registry
  */
@@ -140,40 +178,13 @@ router.get("/artworks", async (req, res) => {
 
 /**
  * @route   PATCH /api/admin/artworks/:id/stock
- * @desc    Adjust or set stock quantity for any artwork on the platform
+ * @desc    Disallowed for admin: Only the creator/artist can manage artwork stock
  */
 router.patch("/artworks/:id/stock", async (req, res) => {
-  try {
-    const artworkCollection = getArtworkCollection(req);
-    const oid = toOid(req.params.id);
-    const { delta, quantity } = req.body;
-
-    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
-    if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork not found." });
-
-    let newQuantity;
-    if (typeof quantity === "number") {
-      newQuantity = Math.max(0, quantity);
-    } else if (typeof delta === "number") {
-      const currentQty = typeof existingArtwork.quantity === "number" ? existingArtwork.quantity : 10;
-      newQuantity = Math.max(0, currentQty + delta);
-    } else {
-      return res.status(400).json({ error: true, message: "Quantity or delta must be provided." });
-    }
-
-    const isSold = newQuantity === 0;
-
-    const result = await artworkCollection.findOneAndUpdate(
-      { _id: existingArtwork._id },
-      { $set: { quantity: newQuantity, isSold, updatedAt: new Date() } },
-      { returnDocument: "after" }
-    );
-
-    const updated = result && result.value ? result.value : result;
-    res.status(200).json({ success: true, data: updated });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to update artwork stock.", details: err.message });
-  }
+  return res.status(403).json({
+    error: true,
+    message: "Admin accounts cannot modify artwork stock. Only the artist who created the artwork can change its stock.",
+  });
 });
 
 /**
@@ -202,7 +213,11 @@ router.delete("/artworks/:id", async (req, res) => {
     const artworkCollection = getArtworkCollection(req);
     const oid = toOid(req.params.id);
 
-    const result = await artworkCollection.deleteOne({ _id: oid });
+    const query = oid
+      ? { $or: [{ _id: oid }, { _id: req.params.id }, { id: req.params.id }] }
+      : { $or: [{ _id: req.params.id }, { id: req.params.id }] };
+
+    const result = await artworkCollection.deleteOne(query);
 
     if (result.deletedCount === 0) {
       return res.status(404).json({ error: true, message: "Artwork item lookup footprint not found." });

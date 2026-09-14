@@ -55,16 +55,125 @@ const canUserModifyReview = async (db, review, user) => {
   return false;
 };
 
-// Add a new comment/review for an artwork
+/**
+ * Helper to verify whether a user has actually purchased this artwork
+ */
+const hasUserPurchasedArtwork = async (db, artworkId, user) => {
+  if (!artworkId || !user) return false;
+  const userEmailLower = (user.email || "").toLowerCase().trim();
+  const userIdStr = user.id ? user.id.toString() : (user._id ? user._id.toString() : "");
+
+  const artworkCollection = db.collection("artworks");
+  const orderCollection = db.collection("orders");
+  const artOid = toOid(artworkId);
+
+  // 1. Check artwork doc for direct buyer record
+  const artworkDoc = await artworkCollection.findOne({
+    $or: [
+      ...(artOid ? [{ _id: artOid }] : []),
+      { _id: artworkId },
+      { id: artworkId },
+    ],
+  });
+
+  if (artworkDoc) {
+    if (artworkDoc.buyerEmail && artworkDoc.buyerEmail.toLowerCase().trim() === userEmailLower) return true;
+    if (artworkDoc.buyerId && userIdStr && artworkDoc.buyerId.toString() === userIdStr) return true;
+  }
+
+  // 2. Check orders collection for paid order
+  const orderFilter = {
+    $and: [
+      {
+        $or: [
+          ...(artOid ? [{ artworkId: artOid }, { "artworkDetails._id": artOid }] : []),
+          { artworkId: artworkId.toString() },
+          { "artworkDetails._id": artworkId.toString() },
+        ],
+      },
+      {
+        $or: [
+          { buyerEmail: userEmailLower },
+          ...(userIdStr ? [{ buyerId: userIdStr }, ...(toOid(userIdStr) ? [{ buyerId: toOid(userIdStr) }] : [])] : []),
+        ],
+      },
+      {
+        status: { $in: ["paid", "completed", "success"] },
+      },
+    ],
+  };
+
+  const verifiedOrder = await orderCollection.findOne(orderFilter);
+  return Boolean(verifiedOrder);
+};
+
+// Check if user is eligible to review an artwork
+router.get("/eligibility/:artworkId", verifyToken, async (req, res) => {
+  try {
+    const db = req.app.get("db");
+    const { artworkId } = req.params;
+    const userRole = (req.user.role || "").toLowerCase();
+
+    if (userRole === "admin") {
+      return res.json({
+        canReview: false,
+        reason: "admin",
+        message: "Admin accounts cannot post artwork reviews.",
+      });
+    }
+
+    if (userRole === "artist") {
+      return res.json({
+        canReview: false,
+        reason: "artist",
+        message: "Artists are not permitted to review artworks.",
+      });
+    }
+
+    const hasBought = await hasUserPurchasedArtwork(db, artworkId, req.user);
+    if (!hasBought) {
+      return res.json({
+        canReview: false,
+        reason: "not_purchased",
+        message: "You must purchase this artwork to unlock review and rating submission.",
+      });
+    }
+
+    return res.json({ canReview: true, reason: "eligible" });
+  } catch (err) {
+    console.error("[REVIEW ELIGIBILITY ERROR]:", err.message);
+    return res.status(500).json({ error: true, message: err.message });
+  }
+});
+
+// Add a new comment/review for an artwork (Only verified buyers who purchased can review)
 router.post("/", verifyToken, async (req, res) => {
   try {
     const commentCollection = getCommentCollection(req);
     const db = req.app.get("db");
     const userCollection = db.collection("user");
-    const { artworkId, text, rating, userName, userImage } = req.body;
+    const { artworkId, text, rating, userName, userImage, images } = req.body;
 
     if (!artworkId || !text?.trim()) {
       return res.status(400).json({ error: true, message: "Artwork ID and review text are required." });
+    }
+
+    // Role restrictions: Admins and Artists cannot review
+    const userRole = (req.user.role || "").toLowerCase();
+    if (userRole === "admin") {
+      return res.status(403).json({ error: true, message: "Admin accounts cannot post artwork reviews." });
+    }
+    if (userRole === "artist") {
+      return res.status(403).json({ error: true, message: "Artists are not permitted to review artworks." });
+    }
+
+    // Purchase verification: Must have bought the artwork
+    const hasBought = await hasUserPurchasedArtwork(db, artworkId, req.user);
+    if (!hasBought) {
+      return res.status(403).json({
+        error: true,
+        message: "Only verified buyers who purchased this artwork can leave a review.",
+      });
     }
 
     let finalUserName = userName;
@@ -81,14 +190,21 @@ router.post("/", verifyToken, async (req, res) => {
 
     const parsedRating = Math.max(1, Math.min(5, Number(rating) || 5));
 
+    // Process uploaded review images (max 3 images)
+    const validImages = Array.isArray(images)
+      ? images.filter((img) => typeof img === "string" && img.trim() !== "").slice(0, 3)
+      : [];
+
     const doc = {
       artworkId: artworkId.toString(),
       userId: req.user.id || req.user._id?.toString(),
       userEmail: req.user.email,
-      userName: finalUserName || "Art Collector",
+      userName: finalUserName || "Verified Collector",
       userImage: finalUserImage || "",
       rating: parsedRating,
       text: text.trim(),
+      images: validImages,
+      isVerifiedBuyer: true,
       createdAt: new Date(),
     };
 
@@ -141,11 +257,12 @@ router.get("/:artworkId", async (req, res) => {
       });
     }
 
-    // Normalize rating to always have a valid number
+    // Normalize rating and images
     const normalizedReviews = reviews.map((r) => ({
       ...r,
       _id: r._id.toString(),
       rating: typeof r.rating === "number" ? r.rating : 5,
+      images: Array.isArray(r.images) ? r.images : [],
     }));
 
     return res.json(normalizedReviews);
@@ -160,7 +277,7 @@ router.put("/:id", verifyToken, async (req, res) => {
   try {
     const commentCollection = getCommentCollection(req);
     const db = req.app.get("db");
-    const { text, rating } = req.body;
+    const { text, rating, images } = req.body;
     const oid = toOid(req.params.id);
 
     if (!oid && !req.params.id) {
@@ -187,6 +304,9 @@ router.put("/:id", verifyToken, async (req, res) => {
     }
     if (rating !== undefined) {
       updatePayload.rating = Math.max(1, Math.min(5, Number(rating) || 5));
+    }
+    if (Array.isArray(images)) {
+      updatePayload.images = images.filter((img) => typeof img === "string" && img.trim() !== "").slice(0, 3);
     }
 
     await commentCollection.updateOne({ _id: existingReview._id }, { $set: updatePayload });
