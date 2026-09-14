@@ -99,8 +99,15 @@ router.post("/create-checkout-session", async (req, res) => {
       return res.status(404).json({ success: false, message: "Artwork not found in inventory." });
     }
 
-    if (artwork.isSold) {
-      return res.status(400).json({ success: false, message: "This artwork has already been sold." });
+    const isSoldOut = Boolean(
+      artwork.isSold === true ||
+      artwork.status === "sold" ||
+      artwork.status === "out_of_stock" ||
+      (typeof artwork.quantity === "number" && artwork.quantity <= 0)
+    );
+
+    if (isSoldOut) {
+      return res.status(400).json({ success: false, message: "This artwork is currently sold out / out of stock." });
     }
 
     const artistEmail = (artwork.artistEmail || artwork.userEmail || "").trim().toLowerCase();
@@ -241,14 +248,16 @@ router.post("/verify-payment-sync", async (req, res) => {
 
     // Decrement artwork stock and update status
     if (artworkDoc) {
-      const currentQty = typeof artworkDoc.quantity === "number" ? artworkDoc.quantity : 1;
+      const currentQty = typeof artworkDoc.quantity === "number" ? artworkDoc.quantity : (artworkDoc.isSold ? 0 : 1);
       const newQty = Math.max(0, currentQty - 1);
+      const isNowSold = newQty === 0;
       await artworkCollection.updateOne(
         { _id: artworkDoc._id },
         {
           $set: {
             quantity: newQty,
-            isSold: newQty === 0,
+            isSold: isNowSold,
+            status: isNowSold ? "sold" : (artworkDoc.status || "available"),
             buyerId: resolvedBuyerId,
             buyerEmail: finalBuyerEmail,
             soldAt: new Date(),

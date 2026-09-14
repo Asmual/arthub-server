@@ -31,11 +31,18 @@ router.get("/featured", async (req, res) => {
       { $sample: { size: 8 } },
     ]).toArray();
     const normalized = artworks.map((art) => {
-      const stock = typeof art.quantity === "number" ? art.quantity : 10;
+      const isSold = Boolean(
+        art.isSold === true ||
+        art.status === "sold" ||
+        art.status === "out_of_stock" ||
+        (typeof art.quantity === "number" && art.quantity <= 0)
+      );
+      const stock = typeof art.quantity === "number" ? art.quantity : (isSold ? 0 : 1);
       return {
         ...art,
         quantity: stock,
-        isSold: stock === 0,
+        isSold,
+        status: isSold ? "sold" : (art.status || "available"),
       };
     });
     res.json(normalized);
@@ -129,11 +136,18 @@ router.get("/", async (req, res) => {
       .toArray();
 
     const normalizedArtworks = artworks.map((art) => {
-      const stock = typeof art.quantity === "number" ? art.quantity : 10;
+      const isSold = Boolean(
+        art.isSold === true ||
+        art.status === "sold" ||
+        art.status === "out_of_stock" ||
+        (typeof art.quantity === "number" && art.quantity <= 0)
+      );
+      const stock = typeof art.quantity === "number" ? art.quantity : (isSold ? 0 : 1);
       return {
         ...art,
         quantity: stock,
-        isSold: stock === 0,
+        isSold,
+        status: isSold ? "sold" : (art.status || "available"),
       };
     });
 
@@ -264,9 +278,16 @@ router.get("/:id", async (req, res) => {
       artwork.artistName = artwork.artistDetails.name || artwork.artistName;
       artwork.artistImage = artwork.artistDetails.image || "";
     }
-    const stock = typeof artwork.quantity === "number" ? artwork.quantity : 10;
+    const isSold = Boolean(
+      artwork.isSold === true ||
+      artwork.status === "sold" ||
+      artwork.status === "out_of_stock" ||
+      (typeof artwork.quantity === "number" && artwork.quantity <= 0)
+    );
+    const stock = typeof artwork.quantity === "number" ? artwork.quantity : (isSold ? 0 : 1);
     artwork.quantity = stock;
-    artwork.isSold = stock === 0;
+    artwork.isSold = isSold;
+    artwork.status = isSold ? "sold" : (artwork.status || "available");
 
     res.json(artwork);
   } catch (err) {
