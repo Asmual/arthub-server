@@ -81,6 +81,9 @@ router.post("/create-checkout-session", async (req, res) => {
     const { artworkId, price, name, email, phone } = req.body;
 
     const authenticatedUser = (await resolveCheckoutUser(req)) || {};
+    if (authenticatedUser.role === "admin") {
+      return res.status(403).json({ success: false, message: "Admins are not permitted to purchase artworks." });
+    }
     const userEmail = (email && typeof email === "string" && email.includes("@"))
       ? email.trim()
       : authenticatedUser.email;
