@@ -1,23 +1,27 @@
-const express = require("express");
-const router = express.Router();
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const { ObjectId } = require("mongodb");
-const jwt = require("jsonwebtoken");
-const { verifyToken, verifyRole } = require("../middlewares");
+import express, { Request, Response } from "express";
+import Stripe from "stripe";
+import { ObjectId, Db } from "mongodb";
+import jwt from "jsonwebtoken";
+import { verifyToken, verifyRole } from "../middlewares";
+import { AuthenticatedRequest } from "../types";
 
-const CANDIDATE_SECRETS = Array.from(
+const router = express.Router();
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
+
+const CANDIDATE_SECRETS: string[] = Array.from(
   new Set(
     [
       process.env.JWT_SECRET,
       process.env.BETTER_AUTH_SECRET,
       "092de91c49c4ac4973f345857cc126380d4de54870b543d9131e5a8d288d5629",
       "h7HenqE4kAgeZTyX4Ue2AWO4ZxedhRyp",
-    ].filter(Boolean)
+    ].filter((s): s is string => Boolean(s))
   )
 );
 
 // Helper to safely convert string ID to MongoDB ObjectId
-const toOid = (id) => {
+const toOid = (id: string | undefined | null): ObjectId | null => {
+  if (!id) return null;
   try {
     return ObjectId.isValid(id) ? new ObjectId(id) : null;
   } catch {
@@ -26,14 +30,14 @@ const toOid = (id) => {
 };
 
 // Helper to validate external image URLs for Stripe
-const isValidStripeImageUrl = (url) => {
+const isValidStripeImageUrl = (url: string): boolean => {
   if (!url || typeof url !== "string") return false;
   const urlRegex = /^https:\/\/[a-zA-Z0-9-_.]+\.[a-zA-Z]{2,}\/.*\.(jpg|jpeg|png|webp|gif|svg)(\?.*)?$/i;
   return urlRegex.test(url) && !url.includes("localhost") && !url.includes("127.0.0.1");
 };
 
 // Resilient helper to resolve user identity from Header JWT or Request Body
-const resolveCheckoutUser = async (req) => {
+const resolveCheckoutUser = async (req: Request): Promise<any> => {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
     const token = authHeader.split(" ")[1];
@@ -45,14 +49,14 @@ const resolveCheckoutUser = async (req) => {
         // Try next secret
       }
     }
-    const decoded = jwt.decode(token);
+    const decoded = jwt.decode(token) as any;
     if (decoded && decoded.email) return decoded;
   }
 
   // Fallback to email in request body
   const bodyEmail = (req.body?.email || "").trim().toLowerCase();
   if (bodyEmail && bodyEmail.includes("@")) {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db | undefined;
     if (db) {
       let userDoc = await db.collection("user").findOne({ email: bodyEmail });
       if (!userDoc) {
@@ -74,9 +78,9 @@ const resolveCheckoutUser = async (req) => {
 };
 
 // Create a Stripe checkout session
-router.post("/create-checkout-session", async (req, res) => {
+router.post("/create-checkout-session", async (req: Request, res: Response) => {
   try {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const artworkCollection = db.collection("artworks");
     const { artworkId, price, name, email, phone } = req.body;
 
@@ -128,7 +132,7 @@ router.post("/create-checkout-session", async (req, res) => {
       "http://localhost:3000"
     ).replace(/\/$/, "");
 
-    const productData = {
+    const productData: any = {
       name: artwork.title || "Original Artwork",
       description: artwork.category ? `Category: ${artwork.category}` : "Original ArtHub Piece",
     };
@@ -171,21 +175,21 @@ router.post("/create-checkout-session", async (req, res) => {
     });
 
     return res.status(200).json({ success: true, url: session.url, sessionId: session.id });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[PAYMENT ERROR] Create checkout session error:", error.message);
     return res.status(500).json({ success: false, message: error.message });
   }
 });
 
 // Verify and synchronize Stripe checkout session payment
-router.post("/verify-payment-sync", async (req, res) => {
+router.post("/verify-payment-sync", async (req: AuthenticatedRequest, res: Response) => {
   const { sessionId } = req.body;
   if (!sessionId) {
     return res.status(400).json({ success: false, message: "Missing sessionId parameter." });
   }
 
   try {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const orderCollection = db.collection("orders");
     const userCollection = db.collection("user");
     const artworkCollection = db.collection("artworks");
@@ -205,14 +209,14 @@ router.post("/verify-payment-sync", async (req, res) => {
 
     const artworkOid = toOid(artworkId);
     const artworkDoc = artworkOid
-      ? await artworkCollection.findOne({ $or: [{ _id: artworkOid }, { _id: artworkId }] })
-      : await artworkCollection.findOne({ _id: artworkId });
+      ? await artworkCollection.findOne({ $or: [{ _id: artworkOid }, { _id: artworkId }] } as any)
+      : await artworkCollection.findOne({ _id: artworkId } as any);
 
     const finalArtistEmail = (artistEmail || artworkDoc?.artistEmail || artworkDoc?.userEmail || "").trim().toLowerCase();
     const finalBuyerEmail = (buyerEmail || session.customer_email || req.user?.email || "").trim().toLowerCase();
     const resolvedBuyerId = toOid(buyerId) || toOid(req.user?.id) || buyerId || req.user?.id || null;
 
-    const structuredOrderPayload = {
+    const structuredOrderPayload: any = {
       transactionId: session.id,
       type: "purchase",
       artworkId: artworkDoc ? artworkDoc._id : (artworkOid || artworkId),
@@ -230,8 +234,8 @@ router.post("/verify-payment-sync", async (req, res) => {
       buyerId: resolvedBuyerId,
       buyerEmail: finalBuyerEmail,
       artistEmail: finalArtistEmail,
-      amount: session.amount_total / 100,
-      price: session.amount_total / 100,
+      amount: (session.amount_total || 0) / 100,
+      price: (session.amount_total || 0) / 100,
       currency: session.currency || "usd",
       status: "paid",
       paymentMethod: session.payment_method_types?.[0] || "card",
@@ -283,18 +287,18 @@ router.post("/verify-payment-sync", async (req, res) => {
       data: structuredOrderPayload,
       message: "Payment verified and order created successfully.",
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[PAYMENT ERROR] Verify payment sync error:", error.message);
     return res.status(500).json({ success: false, message: error.message });
   }
 });
 
 // Retrieve order details by Stripe session ID
-router.get("/session/:sessionId", verifyToken, async (req, res) => {
+router.get("/session/:sessionId", verifyToken as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const orderCollection = db.collection("orders");
-    const { sessionId } = req.params;
+    const sessionId = req.params.sessionId as string;
 
     const order = await orderCollection.findOne({ transactionId: sessionId });
     if (order) {
@@ -310,27 +314,27 @@ router.get("/session/:sessionId", verifyToken, async (req, res) => {
       success: true,
       data: {
         transactionId: session.id,
-        amount: session.amount_total / 100,
+        amount: (session.amount_total || 0) / 100,
         currency: session.currency,
         status: session.payment_status,
         metadata: session.metadata,
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     return res.status(500).json({ success: false, message: error.message });
   }
 });
 
 // Fetch purchase orders for the authenticated buyer
-router.get("/my-orders", verifyToken, async (req, res) => {
+router.get("/my-orders", verifyToken as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const orderCollection = db.collection("orders");
-    const userEmail = req.user.email?.toLowerCase();
-    const userId = req.user.id || req.user._id?.toString();
+    const userEmail = req.user!.email?.toLowerCase();
+    const userId = req.user!.id || req.user!._id?.toString();
     const userOid = toOid(userId);
 
-    const query = {
+    const query: any = {
       $or: [
         { buyerEmail: userEmail },
         ...(userOid ? [{ buyerId: userOid }] : []),
@@ -344,24 +348,24 @@ router.get("/my-orders", verifyToken, async (req, res) => {
       .toArray();
 
     return res.status(200).json({ success: true, data: orders, orders });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[PAYMENT ERROR] Fetch my-orders error:", error.message);
     return res.status(500).json({ success: false, message: "Failed to retrieve order history." });
   }
 });
 
 // Fetch purchase history by user identifier
-router.get("/history/:userIdentifier", verifyToken, async (req, res) => {
+router.get("/history/:userIdentifier", verifyToken as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const orderCollection = db.collection("orders");
-    const { userIdentifier } = req.params;
+    const userIdentifier = req.params.userIdentifier as string;
     const identifierOid = toOid(userIdentifier);
 
-    const query = {
+    const query: any = {
       $or: [
         { buyerEmail: userIdentifier.toLowerCase() },
-        { buyerEmail: req.user.email?.toLowerCase() },
+        { buyerEmail: req.user!.email?.toLowerCase() },
         ...(identifierOid ? [{ buyerId: identifierOid }] : []),
         { buyerId: userIdentifier },
       ],
@@ -373,18 +377,18 @@ router.get("/history/:userIdentifier", verifyToken, async (req, res) => {
       .toArray();
 
     return res.status(200).json({ success: true, data: orders, orders });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[PAYMENT ERROR] Fetch history error:", error.message);
     return res.status(500).json({ success: false, message: "Failed to retrieve purchase history." });
   }
 });
 
 // Fetch sales orders for the authenticated artist
-router.get("/my-sales", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
+router.get("/my-sales", verifyToken as any, verifyRole(["artist", "admin"]) as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const orderCollection = db.collection("orders");
-    const artistEmail = (req.user.email || "").trim().toLowerCase();
+    const artistEmail = (req.user!.email || "").trim().toLowerCase();
 
     const sales = await orderCollection
       .find({ artistEmail: artistEmail })
@@ -392,16 +396,16 @@ router.get("/my-sales", verifyToken, verifyRole(["artist", "admin"]), async (req
       .toArray();
 
     return res.status(200).json({ success: true, data: sales, sales });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[PAYMENT ERROR] Fetch my-sales error:", error.message);
     return res.status(500).json({ success: false, message: "Failed to retrieve sales records." });
   }
 });
 
 // Fetch all transactions across the platform for admin
-router.get("/all-transactions", verifyToken, verifyRole(["admin"]), async (req, res) => {
+router.get("/all-transactions", verifyToken as any, verifyRole(["admin"]) as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const orderCollection = db.collection("orders");
 
     const transactions = await orderCollection
@@ -410,16 +414,16 @@ router.get("/all-transactions", verifyToken, verifyRole(["admin"]), async (req, 
       .toArray();
 
     return res.status(200).json({ success: true, data: transactions, transactions });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[PAYMENT ERROR] Fetch all transactions error:", error.message);
     return res.status(500).json({ success: false, message: "Failed to retrieve all transactions." });
   }
 });
 
 // Stripe webhook handler for background event processing
-router.post("/webhook", async (req, res) => {
-  const sig = req.headers["stripe-signature"];
-  let event;
+router.post("/webhook", async (req: Request, res: Response) => {
+  const sig = req.headers["stripe-signature"] as string;
+  let event: Stripe.Event;
 
   try {
     const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -428,20 +432,20 @@ router.post("/webhook", async (req, res) => {
     } else {
       event = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error("[STRIPE WEBHOOK ERROR] Signature verification failed:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   if (event.type === "checkout.session.completed") {
-    const session = event.data.object;
-    const db = req.app.get("db");
+    const session = event.data.object as Stripe.Checkout.Session;
+    const db = req.app.get("db") as Db;
     const orderCollection = db.collection("orders");
     const userCollection = db.collection("user");
     const artworkCollection = db.collection("artworks");
 
     try {
-      const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata || {};
+      const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = (session.metadata || {}) as any;
       const existingOrder = await orderCollection.findOne({ transactionId: session.id });
 
       if (!existingOrder) {
@@ -454,7 +458,7 @@ router.post("/webhook", async (req, res) => {
         const finalBuyerEmail = (buyerEmail || session.customer_email || "").trim().toLowerCase();
         const resolvedBuyerId = toOid(buyerId) || buyerId;
 
-        const structuredOrderPayload = {
+        const structuredOrderPayload: any = {
           transactionId: session.id,
           type: "purchase",
           artworkId: artworkDoc ? artworkDoc._id : (artworkOid || artworkId),
@@ -472,8 +476,8 @@ router.post("/webhook", async (req, res) => {
           buyerId: resolvedBuyerId,
           buyerEmail: finalBuyerEmail,
           artistEmail: finalArtistEmail,
-          amount: session.amount_total / 100,
-          price: session.amount_total / 100,
+          amount: (session.amount_total || 0) / 100,
+          price: (session.amount_total || 0) / 100,
           currency: session.currency || "usd",
           status: "paid",
           paymentMethod: session.payment_method_types?.[0] || "card",
@@ -512,12 +516,12 @@ router.post("/webhook", async (req, res) => {
           );
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("[STRIPE WEBHOOK ERROR] Order settlement error:", error.message);
     }
   }
 
-  res.json({ received: true });
+  return res.json({ received: true });
 });
 
-module.exports = router;
+export default router;

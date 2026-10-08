@@ -1,8 +1,10 @@
-const express = require("express");
+import express, { Request, Response } from "express";
+import { Db } from "mongodb";
+
 const router = express.Router();
 
 // Intelligent local art curator generator when external Gemini is busy or API key is absent
-function generateArtCuratorMetadata(imageUrl = "") {
+function generateArtCuratorMetadata(imageUrl: string = "") {
   const titles = [
     "Symphony of Amber & Azure",
     "Whispers of the Eternal Canvas",
@@ -44,7 +46,7 @@ function generateArtCuratorMetadata(imageUrl = "") {
  * @desc    Analyze uploaded artwork image and auto-generate title, description, category, tags, price & stock
  * @access  Public / Authenticated
  */
-router.post("/describe-artwork", async (req, res) => {
+router.post("/describe-artwork", async (req: Request, res: Response) => {
   try {
     const { imageUrl, imageBase64, mimeType = "image/jpeg" } = req.body;
 
@@ -96,7 +98,7 @@ Return a STRICT JSON object with the following fields:
         try {
           const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-          const parts = [{ text: systemPrompt }];
+          const parts: any[] = [{ text: systemPrompt }];
           if (base64Data) {
             parts.push({
               inlineData: {
@@ -122,7 +124,7 @@ Return a STRICT JSON object with the following fields:
           });
 
           if (geminiRes.ok) {
-            const geminiData = await geminiRes.json();
+            const geminiData = (await geminiRes.json()) as any;
             const rawText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
             if (rawText) {
               const parsed = JSON.parse(rawText);
@@ -134,7 +136,7 @@ Return a STRICT JSON object with the following fields:
               });
             }
           }
-        } catch (callErr) {
+        } catch (callErr: any) {
           console.warn(`[SERVER GEMINI ${model}]:`, callErr.message);
         }
       }
@@ -163,16 +165,16 @@ Return a STRICT JSON object with the following fields:
  * @desc    Curate artwork recommendations based on buyer space, mood, colors, or budget
  * @access  Public
  */
-router.post("/art-advisor", async (req, res) => {
+router.post("/art-advisor", async (req: Request, res: Response) => {
   try {
     const { messages = [], userPrompt = "" } = req.body;
     const activePrompt = userPrompt || (messages[messages.length - 1]?.content) || "Hello! Can you recommend some beautiful artworks for my home?";
 
     const apiKey = process.env.GEMINI_API_KEY;
 
-    let catalog = [];
+    let catalog: any[] = [];
     try {
-      const db = req.app.get("db");
+      const db = req.app.get("db") as Db | undefined;
       if (db) {
         const artworksCollection = db.collection("artworks");
         const availableArtworks = await artworksCollection
@@ -181,7 +183,7 @@ router.post("/art-advisor", async (req, res) => {
           .limit(35)
           .toArray();
 
-        catalog = availableArtworks.map((a) => ({
+        catalog = availableArtworks.map((a: any) => ({
           id: a._id?.toString(),
           title: a.title || "Untitled Masterpiece",
           price: Number(a.price || 0),
@@ -193,7 +195,7 @@ router.post("/art-advisor", async (req, res) => {
           description: a.description ? a.description.substring(0, 160) + "..." : "",
         }));
       }
-    } catch (dbErr) {
+    } catch (dbErr: any) {
       console.warn("[ADVISOR DB CATALOG WARN]:", dbErr.message);
     }
 
@@ -260,7 +262,7 @@ OUTPUT FORMAT (STRICT JSON):
           });
 
           if (geminiRes.ok) {
-            const geminiData = await geminiRes.json();
+            const geminiData = (await geminiRes.json()) as any;
             const rawText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
             if (rawText) {
               const parsed = JSON.parse(rawText);
@@ -271,7 +273,7 @@ OUTPUT FORMAT (STRICT JSON):
               });
             }
           }
-        } catch (callErr) {
+        } catch (callErr: any) {
           console.warn(`[SERVER GEMINI ADVISOR ${model}]:`, callErr.message);
         }
       }
@@ -281,7 +283,7 @@ OUTPUT FORMAT (STRICT JSON):
     const lowerPrompt = activePrompt.toLowerCase();
     const matchedArtworks = catalog.filter((a) => {
       const text = `${a.title} ${a.category} ${a.tags.join(" ")} ${a.description}`.toLowerCase();
-      return lowerPrompt.split(" ").some((w) => w.length > 3 && text.includes(w));
+      return lowerPrompt.split(" ").some((w: string) => w.length > 3 && text.includes(w));
     });
 
     const selected = (matchedArtworks.length > 0 ? matchedArtworks : catalog).slice(0, 3);
@@ -311,7 +313,7 @@ OUTPUT FORMAT (STRICT JSON):
     });
   } catch (err) {
     console.error("[SERVER AI ART ADVISOR ERROR]:", err);
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: {
         reply: "Welcome to ArtHub! I would love to help you discover authentic original artwork that matches your personal aesthetic and interior design.",
@@ -326,4 +328,4 @@ OUTPUT FORMAT (STRICT JSON):
   }
 });
 
-module.exports = router;
+export default router;

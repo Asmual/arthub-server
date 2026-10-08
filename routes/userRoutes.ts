@@ -1,14 +1,17 @@
-const express = require("express");
+import express, { Request, Response } from "express";
+import { ObjectId, Db } from "mongodb";
+import jwt from "jsonwebtoken";
+import { verifyToken } from "../middlewares";
+import { getUserCollection } from "../models/collections";
+import { AuthenticatedRequest } from "../types";
+
 const router = express.Router();
-const { ObjectId } = require("mongodb");
-const jwt = require("jsonwebtoken");
-const { verifyToken } = require("../middlewares");
-const { getUserCollection } = require("../models/collections");
 
 /**
  * Utility helper to safely cast string IDs to MongoDB ObjectIds
  */
-const toOid = (id) => {
+const toOid = (id: string | undefined | null): ObjectId | null => {
+  if (!id) return null;
   try {
     return ObjectId.isValid(id) ? new ObjectId(id) : null;
   } catch {
@@ -21,7 +24,7 @@ const toOid = (id) => {
  * @desc    Generate a 7-day expiry JWT token after verification from Better Auth
  * @access  Public
  */
-router.post("/generate-token", async (req, res) => {
+router.post("/generate-token", async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
     if (!email) {
@@ -54,9 +57,9 @@ router.post("/generate-token", async (req, res) => {
       { expiresIn: "7d" }
     );
 
-    res.json({ success: true, token, role: assignedRole });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Token generation failed.", details: err.message });
+    return res.json({ success: true, token, role: assignedRole });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Token generation failed.", details: err.message });
   }
 });
 
@@ -65,11 +68,11 @@ router.post("/generate-token", async (req, res) => {
  * @desc    Fetch current authenticated user profile data from source of truth
  * @access  Private (JWT Required)
  */
-router.get("/profile", verifyToken, async (req, res) => {
+router.get("/profile", verifyToken as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userCollection = getUserCollection(req);
     const user = await userCollection.findOne(
-      { email: req.user.email },
+      { email: req.user!.email },
       { projection: { password: 0, hashedPassword: 0 } }
     );
 
@@ -77,9 +80,9 @@ router.get("/profile", verifyToken, async (req, res) => {
       return res.status(404).json({ error: true, message: "Profile data registry not found." });
     }
 
-    res.json(user);
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to fetch profile information.", details: err.message });
+    return res.json(user);
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to fetch profile information.", details: err.message });
   }
 });
 
@@ -88,12 +91,12 @@ router.get("/profile", verifyToken, async (req, res) => {
  * @desc    Update editable fields inside the MongoDB user collection
  * @access  Private (JWT Required)
  */
-router.put("/profile", verifyToken, async (req, res) => {
+router.put("/profile", verifyToken as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userCollection = getUserCollection(req);
     const { name, image, bio, specialty, speciality, phone } = req.body;
 
-    const updateFields = { updatedAt: new Date() };
+    const updateFields: any = { updatedAt: new Date() };
 
     if (name !== undefined) updateFields.name = name;
     if (image !== undefined) updateFields.image = image;
@@ -107,7 +110,7 @@ router.put("/profile", verifyToken, async (req, res) => {
     }
 
     const result = await userCollection.updateOne(
-      { email: req.user.email },
+      { email: req.user!.email },
       { $set: updateFields }
     );
 
@@ -116,23 +119,23 @@ router.put("/profile", verifyToken, async (req, res) => {
     }
 
     const updatedUser = await userCollection.findOne(
-      { email: req.user.email },
+      { email: req.user!.email },
       { projection: { password: 0, hashedPassword: 0 } }
     );
 
     // Sync artist image and name across their artworks
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     if (db && (image !== undefined || name !== undefined)) {
-      const artworkUpdate = {};
+      const artworkUpdate: any = {};
       if (image !== undefined) artworkUpdate.artistImage = image;
       if (name !== undefined) artworkUpdate.artistName = name;
       const userIdStr = updatedUser?._id?.toString();
       await db.collection("artworks").updateMany(
         {
           $or: [
-            { artistEmail: req.user.email },
-            { artistEmail: req.user.email.toLowerCase() },
-            { userEmail: req.user.email },
+            { artistEmail: req.user!.email },
+            { artistEmail: req.user!.email.toLowerCase() },
+            { userEmail: req.user!.email },
             ...(userIdStr ? [{ userId: userIdStr }, { artistId: userIdStr }] : []),
           ],
         },
@@ -141,7 +144,7 @@ router.put("/profile", verifyToken, async (req, res) => {
     }
 
     return res.json({ success: true, message: "Profile updated successfully.", user: updatedUser });
-  } catch (err) {
+  } catch (err: any) {
     console.error("[USER ERROR] Update profile error:", err.message);
     return res.status(500).json({ error: true, message: "Failed to update profile.", details: err.message });
   }
@@ -152,9 +155,9 @@ router.put("/profile", verifyToken, async (req, res) => {
  * @desc    Route stub instructing client to bypass backend for password alterations
  * @access  Private (JWT Required)
  */
-router.patch("/change-password", verifyToken, async (req, res) => {
+router.patch("/change-password", verifyToken as any, async (_req: AuthenticatedRequest, res: Response) => {
   // Better Auth handles credentials directly via client SDK session mappings
-  res.status(200).json({ message: "Use BetterAuth to change password" });
+  return res.status(200).json({ message: "Use BetterAuth to change password" });
 });
 
 /**
@@ -162,10 +165,11 @@ router.patch("/change-password", verifyToken, async (req, res) => {
  * @desc    Update subscription tier lifecycle status after successful payment processing
  * @access  Private (JWT Required)
  */
-router.patch("/:id/subscription", verifyToken, async (req, res) => {
+router.patch("/:id/subscription", verifyToken as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userCollection = getUserCollection(req);
-    const oid = toOid(req.params.id);
+    const id = req.params.id as string;
+    const oid = toOid(id);
     const { subscriptionTier } = req.body;
 
     const allowedTiers = ["free", "pro", "premium"];
@@ -173,8 +177,10 @@ router.patch("/:id/subscription", verifyToken, async (req, res) => {
       return res.status(400).json({ error: true, message: "Invalid tier allocation. Allowed: free | pro | premium" });
     }
 
+    const query = oid ? { $or: [{ _id: oid }, { id }] } : { id };
+
     const result = await userCollection.updateOne(
-      { $or: [{ _id: oid }, { id: req.params.id }] },
+      query as any,
       { $set: { subscriptionTier, updatedAt: new Date() } }
     );
 
@@ -182,9 +188,9 @@ router.patch("/:id/subscription", verifyToken, async (req, res) => {
       return res.status(404).json({ error: true, message: "User profile subscription target missing." });
     }
 
-    res.json({ success: true, subscriptionTier });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to update subscription structure.", details: err.message });
+    return res.json({ success: true, subscriptionTier });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to update subscription structure.", details: err.message });
   }
 });
 
@@ -193,13 +199,16 @@ router.patch("/:id/subscription", verifyToken, async (req, res) => {
  * @desc    Fetch public profile layout metrics for an artist or buyer
  * @access  Public
  */
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req: Request, res: Response) => {
   try {
     const userCollection = getUserCollection(req);
-    const oid = toOid(req.params.id);
+    const id = req.params.id as string;
+    const oid = toOid(id);
+
+    const query = oid ? { $or: [{ _id: oid }, { id }] } : { id };
 
     const user = await userCollection.findOne(
-      { $or: [{ _id: oid }, { id: req.params.id }] },
+      query as any,
       { projection: { password: 0, hashedPassword: 0, email: 0 } } // Exclude sensitive details from public view
     );
 
@@ -207,9 +216,9 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ error: true, message: "Public user trace not found." });
     }
 
-    res.json(user);
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to fetch public user metadata.", details: err.message });
+    return res.json(user);
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to fetch public user metadata.", details: err.message });
   }
 });
 
@@ -218,7 +227,7 @@ router.get("/:id", async (req, res) => {
  * @desc    Upgrade user account role to artist in database
  * @access  Public / Authenticated
  */
-router.post("/upgrade-to-artist", async (req, res) => {
+router.post("/upgrade-to-artist", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { email } = req.body;
     const targetEmail = email || req.user?.email;
@@ -228,7 +237,7 @@ router.post("/upgrade-to-artist", async (req, res) => {
     }
 
     const userCollection = getUserCollection(req);
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
 
     const user = await userCollection.findOne({ email: targetEmail });
     if (!user) {
@@ -236,12 +245,12 @@ router.post("/upgrade-to-artist", async (req, res) => {
     }
 
     const now = new Date();
-    const updateFields = {
+    const updateFields: any = {
       role: "artist",
       updatedAt: now,
     };
 
-    if (!user.plan && !user.subscription?.plan) {
+    if (!(user as any).plan && !(user as any).subscription?.plan) {
       updateFields.plan = "free";
       updateFields.subscription = {
         plan: "free",
@@ -261,15 +270,15 @@ router.post("/upgrade-to-artist", async (req, res) => {
       await usersCol.updateOne({ email: targetEmail }, { $set: updateFields });
     }
 
-    res.json({
+    return res.json({
       success: true,
       message: "Account upgraded to artist successfully.",
       role: "artist",
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error("[USER ROUTES ERROR] upgrade-to-artist:", err);
-    res.status(500).json({ error: true, message: "Failed to upgrade account to artist.", details: err.message });
+    return res.status(500).json({ error: true, message: "Failed to upgrade account to artist.", details: err.message });
   }
 });
 
-module.exports = router;
+export default router;

@@ -1,9 +1,11 @@
+import { OrderDoc } from "../types";
+
 /**
  * Helper to structure and validate order documents before inserting into the MongoDB 'orders' collection.
  * Normalizes user data and ensures compliance with transaction tracking properties.
  */
-const prepareOrderData = (data) => {
-  const order = {
+export const prepareOrderData = (data: Partial<OrderDoc> & { price?: number }): OrderDoc => {
+  const order: OrderDoc = {
     artworkId: data.artworkId || null,
     buyerId: data.buyerId || "",
     buyerEmail: data.buyerEmail ? data.buyerEmail.trim().toLowerCase() : "",
@@ -11,9 +13,11 @@ const prepareOrderData = (data) => {
     artworkTitle: data.artworkTitle || "",
     amount: Number(data.amount || data.price) || 0,
     transactionId: data.transactionId || "",
-    status: ["paid", "failed", "pending"].includes(data.status) ? data.status : "paid",
+    status: (["paid", "failed", "pending"].includes(data.status as string)
+      ? data.status
+      : "paid") as "paid" | "failed" | "pending",
     createdAt: data.createdAt || new Date(),
-    updatedAt: new Date()
+    updatedAt: new Date(),
   };
 
   // Runtime assertion enforcing strict system-wide validation rules
@@ -30,4 +34,4 @@ const prepareOrderData = (data) => {
   return order;
 };
 
-module.exports = { prepareOrderData };
+export default { prepareOrderData };

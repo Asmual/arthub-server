@@ -1,14 +1,16 @@
-const jwt = require("jsonwebtoken");
-const { ObjectId } = require("mongodb");
+import { Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
+import { Db } from "mongodb";
+import { AuthenticatedRequest, AuthUser } from "./types";
 
-const CANDIDATE_SECRETS = Array.from(
+const CANDIDATE_SECRETS: string[] = Array.from(
   new Set(
     [
       process.env.JWT_SECRET,
       process.env.BETTER_AUTH_SECRET,
       "092de91c49c4ac4973f345857cc126380d4de54870b543d9131e5a8d288d5629",
       "h7HenqE4kAgeZTyX4Ue2AWO4ZxedhRyp",
-    ].filter(Boolean)
+    ].filter((s): s is string => Boolean(s))
   )
 );
 
@@ -17,7 +19,11 @@ const CANDIDATE_SECRETS = Array.from(
  * Authorization format: Bearer <token>
  * Multi-secret tolerant with DB identity verification fallback
  */
-async function verifyToken(req, res, next) {
+export async function verifyToken(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void | Response> {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -31,7 +37,7 @@ async function verifyToken(req, res, next) {
     const token = authHeader.split(" ")[1];
 
     // 1. Try verifying with all candidate secrets
-    let verifiedDecoded = null;
+    let verifiedDecoded: any = null;
     for (const secret of CANDIDATE_SECRETS) {
       try {
         verifiedDecoded = jwt.verify(token, secret);
@@ -51,9 +57,9 @@ async function verifyToken(req, res, next) {
     }
 
     // 2. Fallback: Decode token payload and verify against database
-    const decoded = jwt.decode(token);
+    const decoded = jwt.decode(token) as any;
     if (decoded && decoded.email) {
-      const db = req.app.get("db");
+      const db = req.app.get("db") as Db | undefined;
       if (db) {
         let userDoc = await db.collection("user").findOne({ email: decoded.email });
         if (!userDoc) {
@@ -77,7 +83,7 @@ async function verifyToken(req, res, next) {
       error: true,
       message: "Forbidden: Invalid or expired token.",
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[AUTH CRITICAL ERROR] Authentication check failure:", error.message);
     return res.status(500).json({
       error: true,
@@ -89,8 +95,8 @@ async function verifyToken(req, res, next) {
 /**
  * Higher-Order Middleware factory for Role-Based Access Control (RBAC)
  */
-function verifyRole(allowedRoles = []) {
-  return async (req, res, next) => {
+export function verifyRole(allowedRoles: string[] = []) {
+  return async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void | Response> => {
     try {
       if (!req.user) {
         return res.status(401).json({
@@ -99,7 +105,14 @@ function verifyRole(allowedRoles = []) {
         });
       }
 
-      const db = req.app.get("db");
+      const db = req.app.get("db") as Db | undefined;
+      if (!db) {
+        return res.status(500).json({
+          error: true,
+          message: "Database instance configuration layer missing on app context.",
+        });
+      }
+
       const liveUser = await db.collection("user").findOne({ email: req.user.email });
 
       if (!liveUser) {
@@ -127,8 +140,8 @@ function verifyRole(allowedRoles = []) {
       req.user.role = userRole;
       req.user._id = liveUser._id; // Attach actual MongoDB ObjectId instance
 
-      next();
-    } catch (error) {
+      return next();
+    } catch (error: any) {
       console.error("[AUTH RBAC CRITICAL ERROR] Role authorization layer crash:", error.message);
       return res.status(500).json({
         error: true,
@@ -138,4 +151,4 @@ function verifyRole(allowedRoles = []) {
   };
 }
 
-module.exports = { verifyToken, verifyRole };
+export default { verifyToken, verifyRole };

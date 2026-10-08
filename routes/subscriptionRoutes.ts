@@ -1,10 +1,22 @@
-const express = require("express");
-const router = express.Router();
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const { ObjectId } = require("mongodb");
-const { verifyToken, verifyRole } = require("../middlewares");
+import express, { Request, Response } from "express";
+import Stripe from "stripe";
+import { Db } from "mongodb";
+import { AuthenticatedRequest } from "../types";
 
-const PLAN_CONFIGS = {
+const router = express.Router();
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
+
+interface PlanConfig {
+  name: string;
+  monthlyPrice: number;
+  yearlyPrice: number;
+  artLimit: string;
+  limitNumber: number;
+  commission: string;
+  description: string;
+}
+
+const PLAN_CONFIGS: Record<string, PlanConfig> = {
   basic: {
     name: "ArtHub Basic Artist Plan",
     monthlyPrice: 10,
@@ -34,7 +46,7 @@ const PLAN_CONFIGS = {
   },
 };
 
-const PLAN_LIMITS = {
+const PLAN_LIMITS: Record<string, number> = {
   free: 5,
   basic: 20,
   pro: 60,
@@ -42,7 +54,7 @@ const PLAN_LIMITS = {
 };
 
 // Create a Stripe checkout session for artist subscriptions
-router.post("/create-checkout-session", async (req, res) => {
+router.post("/create-checkout-session", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { plan, interval = "monthly", email } = req.body;
     const userEmail = email || req.user?.email;
@@ -52,7 +64,7 @@ router.post("/create-checkout-session", async (req, res) => {
     }
 
     // Role check: Only Artists (and Admins) may purchase artist subscription packages
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const user = (await db.collection("user").findOne({ email: userEmail })) ||
                  (await db.collection("users").findOne({ email: userEmail }));
 
@@ -117,14 +129,14 @@ router.post("/create-checkout-session", async (req, res) => {
       url: session.url,
       sessionId: session.id,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[SERVER SUBSCRIPTION ERROR] create-checkout-session:", error);
     return res.status(500).json({ error: true, message: error.message });
   }
 });
 
 // Verify and synchronize Stripe subscription payment
-router.post("/verify-session", async (req, res) => {
+router.post("/verify-session", async (req: Request, res: Response) => {
   const { sessionId } = req.body;
 
   if (!sessionId) {
@@ -132,7 +144,7 @@ router.post("/verify-session", async (req, res) => {
   }
 
   try {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const userCollection = db.collection("user");
     const session = await stripe.checkout.sessions.retrieve(sessionId);
 
@@ -150,7 +162,7 @@ router.post("/verify-session", async (req, res) => {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
 
-    const subscriptionRecord = {
+    const subscriptionRecord: any = {
       plan: plan.toLowerCase(),
       status: "active",
       interval: interval || "monthly",
@@ -206,26 +218,26 @@ router.post("/verify-session", async (req, res) => {
       plan: plan.toLowerCase(),
       subscription: subscriptionRecord,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[SERVER SUBSCRIPTION ERROR] verify-session:", error);
     return res.status(500).json({ error: true, message: error.message });
   }
 });
 
 // Fetch current subscription status & quota for an artist
-router.get("/", async (req, res) => {
+router.get("/", async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const db = req.app.get("db");
-    const email = req.query.email || req.user?.email;
+    const db = req.app.get("db") as Db;
+    const email = (req.query.email as string) || req.user?.email;
 
     if (!email) {
       return res.status(400).json({ error: true, message: "Email parameter required." });
     }
 
-    const user = await db.collection("user").findOne({ email }) ||
-                 await db.collection("users").findOne({ email });
+    const user = (await db.collection("user").findOne({ email })) ||
+                 (await db.collection("users").findOne({ email }));
 
-    const plan = (user?.plan || user?.subscription?.plan || user?.subscriptionTier || "free").toLowerCase();
+    const plan = ((user as any)?.plan || (user as any)?.subscription?.plan || (user as any)?.subscriptionTier || "free").toLowerCase();
     const limit = PLAN_LIMITS[plan] ?? 5;
 
     const artworkCount = await db.collection("artworks").countDocuments({
@@ -248,32 +260,32 @@ router.get("/", async (req, res) => {
       artworkCount,
       remainingSlots: isUnlimited ? "Unlimited" : Math.max(0, limit - artworkCount),
       canUploadMore,
-      subscription: user?.subscription || {
+      subscription: (user as any)?.subscription || {
         plan: "free",
         status: "active",
         price: 0,
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[SERVER SUBSCRIPTION ERROR] get status:", error);
     return res.status(500).json({ error: true, message: error.message });
   }
 });
 
 // Admin Route: Get all subscriptions with quota usage
-router.get("/admin", async (req, res) => {
+router.get("/admin", async (req: Request, res: Response) => {
   try {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const users = await db.collection("user").find({}, { projection: { password: 0 } }).toArray();
     const artworks = await db.collection("artworks").find({}).toArray();
 
-    const countMap = {};
-    artworks.forEach((art) => {
+    const countMap: Record<string, number> = {};
+    artworks.forEach((art: any) => {
       const email = art.artistEmail || art.userEmail || art.email;
       if (email) countMap[email] = (countMap[email] || 0) + 1;
     });
 
-    const enriched = users.map((u) => {
+    const enriched = users.map((u: any) => {
       const plan = (u.plan || u.subscription?.plan || u.subscriptionTier || "free").toLowerCase();
       const limit = PLAN_LIMITS[plan] ?? 5;
       const count = countMap[u.email] || 0;
@@ -295,16 +307,16 @@ router.get("/admin", async (req, res) => {
     });
 
     return res.status(200).json({ success: true, subscriptions: enriched });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[SERVER SUBSCRIPTION ERROR] admin list:", error);
     return res.status(500).json({ error: true, message: error.message });
   }
 });
 
 // Admin Route: Update or cancel artist subscription
-router.put("/admin", async (req, res) => {
+router.put("/admin", async (req: Request, res: Response) => {
   try {
-    const db = req.app.get("db");
+    const db = req.app.get("db") as Db;
     const { email, plan, action, status } = req.body;
 
     if (!email) {
@@ -324,7 +336,7 @@ router.put("/admin", async (req, res) => {
       targetStatus = "active";
     }
 
-    const updateFields = {
+    const updateFields: any = {
       updatedAt: now,
     };
 
@@ -351,10 +363,10 @@ router.put("/admin", async (req, res) => {
       plan: updateFields.plan,
       status: targetStatus,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("[SERVER SUBSCRIPTION ERROR] admin update:", error);
     return res.status(500).json({ error: true, message: error.message });
   }
 });
 
-module.exports = router;
+export default router;

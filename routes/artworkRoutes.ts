@@ -1,11 +1,12 @@
-/* eslint-disable no-undef */
-const express = require("express");
-const router = express.Router();
-const { ObjectId } = require("mongodb");
-const { verifyToken, verifyRole } = require("../middlewares");
-const { getArtworkCollection, getUserCollection, getCommentCollection, getOrderCollection } = require("../models/collections");
+import express, { Request, Response } from "express";
+import { ObjectId } from "mongodb";
+import { verifyToken, verifyRole } from "../middlewares";
+import { getArtworkCollection, getUserCollection, getCommentCollection, getOrderCollection } from "../models/collections";
+import { AuthenticatedRequest } from "../types";
 
-const toOid = (id) => {
+const router = express.Router();
+
+const toOid = (id: string): ObjectId | null => {
   try {
     return ObjectId.isValid(id) ? new ObjectId(id) : null;
   } catch {
@@ -13,24 +14,24 @@ const toOid = (id) => {
   }
 };
 
-const escapeRegex = (string) => {
+const escapeRegex = (string: string): string => {
   return string.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
 };
 
-const isValidDirectImageUrl = (url) => {
+const isValidDirectImageUrl = (url: string): boolean => {
   if (!url || typeof url !== "string") return false;
   const URL_REGEX = /^https:\/\/[a-zA-Z0-9-_.]+\.[a-zA-Z]{2,}\/.*\.(jpg|jpeg|png|webp|gif|svg)(\?.*)?$/i;
   return URL_REGEX.test(url);
 };
 
-router.get("/featured", async (req, res) => {
+router.get("/featured", async (req: Request, res: Response) => {
   try {
     const artworkCollection = getArtworkCollection(req);
     const artworks = await artworkCollection.aggregate([
       { $match: { isDraft: { $ne: true } } },
       { $sample: { size: 8 } },
     ]).toArray();
-    const normalized = artworks.map((art) => {
+    const normalized = artworks.map((art: any) => {
       const isSold = Boolean(
         art.isSold === true ||
         art.status === "sold" ||
@@ -45,18 +46,18 @@ router.get("/featured", async (req, res) => {
         status: isSold ? "sold" : (art.status || "available"),
       };
     });
-    res.json(normalized);
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to fetch featured artworks.", details: err.message });
+    return res.json(normalized);
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to fetch featured artworks.", details: err.message });
   }
 });
 
-router.get("/", async (req, res) => {
+router.get("/", async (req: Request, res: Response) => {
   try {
     const artworkCollection = getArtworkCollection(req);
-    let { search, category, artistId, email, minPrice, maxPrice, sort, page = 1, limit = 12 } = req.query;
+    const { search, category, artistId, email, minPrice, maxPrice, sort, page = 1, limit = 12 } = req.query as any;
 
-    const finalFilter = {};
+    const finalFilter: any = {};
 
     if (search?.trim() && search !== "undefined" && search !== "null") {
       const sanitizedSearch = escapeRegex(search.trim());
@@ -67,9 +68,9 @@ router.get("/", async (req, res) => {
         .find({ $or: [{ name: searchRegex }, { email: searchRegex }] }, { projection: { _id: 1, email: 1 } })
         .toArray();
 
-      const matchedArtistIds = matchingArtists.map((a) => a._id.toString());
-      const matchedArtistOids = matchingArtists.map((a) => a._id);
-      const matchedArtistEmails = matchingArtists.map((a) => a.email).filter(Boolean);
+      const matchedArtistIds = matchingArtists.map((a: any) => a._id.toString());
+      const matchedArtistOids = matchingArtists.map((a: any) => a._id);
+      const matchedArtistEmails = matchingArtists.map((a: any) => a.email).filter(Boolean);
 
       finalFilter.$or = [
         { title: searchRegex },
@@ -111,17 +112,17 @@ router.get("/", async (req, res) => {
 
     if ((minPrice && minPrice !== "undefined") || (maxPrice && maxPrice !== "undefined")) {
       finalFilter.price = {};
-      if (minPrice && minPrice !== "undefined" && !isNaN(minPrice)) finalFilter.price.$gte = Number(minPrice);
-      if (maxPrice && maxPrice !== "undefined" && !isNaN(maxPrice)) finalFilter.price.$lte = Number(maxPrice);
+      if (minPrice && minPrice !== "undefined" && !isNaN(Number(minPrice))) finalFilter.price.$gte = Number(minPrice);
+      if (maxPrice && maxPrice !== "undefined" && !isNaN(Number(maxPrice))) finalFilter.price.$lte = Number(maxPrice);
       if (Object.keys(finalFilter.price).length === 0) delete finalFilter.price;
     }
 
-    const sortMap = {
+    const sortMap: Record<string, any> = {
       newest: { createdAt: -1 },
       "price-asc": { price: 1 },
       "price-desc": { price: -1 },
     };
-    const sortOpt = sortMap[sort] || { createdAt: -1 };
+    const sortOpt = sortMap[sort as string] || { createdAt: -1 };
    
     const currentPage = Math.max(1, Number(page));
     const currentLimit = Math.max(1, Number(limit));
@@ -135,7 +136,7 @@ router.get("/", async (req, res) => {
       .limit(currentLimit)
       .toArray();
 
-    const normalizedArtworks = artworks.map((art) => {
+    const normalizedArtworks = artworks.map((art: any) => {
       const isSold = Boolean(
         art.isSold === true ||
         art.status === "sold" ||
@@ -151,23 +152,23 @@ router.get("/", async (req, res) => {
       };
     });
 
-    res.json({
+    return res.json({
       artworks: normalizedArtworks,
       total,
       page: currentPage,
       totalPages: Math.ceil(total / currentLimit),
     });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to fetch catalog artworks.", details: err.message });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to fetch catalog artworks.", details: err.message });
   }
 });
 
 // Search artworks dynamically by title, artist name, category, or email
-router.get("/search", async (req, res) => {
+router.get("/search", async (req: Request, res: Response) => {
   try {
     const artworkCollection = getArtworkCollection(req);
     const userCollection = getUserCollection(req);
-    const query = (req.query.query || req.query.q || req.query.search || "").trim();
+    const query = ((req.query.query || req.query.q || req.query.search || "") as string).trim();
 
     if (!query || query === "undefined" || query === "null") {
       return res.json([]);
@@ -184,11 +185,11 @@ router.get("/search", async (req, res) => {
       )
       .toArray();
 
-    const matchedArtistIds = matchingArtists.map((a) => a._id.toString());
-    const matchedArtistOids = matchingArtists.map((a) => a._id);
-    const matchedArtistEmails = matchingArtists.map((a) => a.email).filter(Boolean);
+    const matchedArtistIds = matchingArtists.map((a: any) => a._id.toString());
+    const matchedArtistOids = matchingArtists.map((a: any) => a._id);
+    const matchedArtistEmails = matchingArtists.map((a: any) => a.email).filter(Boolean);
 
-    const filter = {
+    const filter: any = {
       isDraft: { $ne: true },
       $or: [
         { title: regex },
@@ -217,7 +218,7 @@ router.get("/search", async (req, res) => {
 
     // Ensure artist name is populated on matching items
     const populated = await Promise.all(
-      artworks.map(async (art) => {
+      artworks.map(async (art: any) => {
         if (!art.artistName && (art.userId || art.artistId)) {
           const rawId = art.userId || art.artistId;
           const uOid = toOid(rawId);
@@ -233,19 +234,20 @@ router.get("/search", async (req, res) => {
     );
 
     return res.json(populated);
-  } catch (err) {
+  } catch (err: any) {
     console.error("[ARTWORK SEARCH ERROR]", err.message);
     return res.status(500).json({ error: true, message: "Search failed.", details: err.message });
   }
 });
 
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req: Request, res: Response) => {
   try {
     const artworkCollection = getArtworkCollection(req);
-    const oid = toOid(req.params.id);
+    const id = req.params.id as string;
+    const oid = toOid(id);
 
     const artworkPipeline = [
-      { $match: { $or: [{ _id: oid }, { _id: req.params.id }] } },
+      { $match: { $or: [{ _id: oid }, { _id: id }] } },
       {
         $lookup: {
           from: "user",
@@ -271,7 +273,9 @@ router.get("/:id", async (req, res) => {
     ];
 
     const results = await artworkCollection.aggregate(artworkPipeline).toArray();
-    if (!results || results.length === 0) return res.status(404).json({ error: true, message: "Artwork item lookup profile missing." });
+    if (!results || results.length === 0) {
+      return res.status(404).json({ error: true, message: "Artwork item lookup profile missing." });
+    }
 
     const artwork = results[0];
     if (artwork.artistDetails) {
@@ -289,26 +293,26 @@ router.get("/:id", async (req, res) => {
     artwork.isSold = isSold;
     artwork.status = isSold ? "sold" : (artwork.status || "available");
 
-    res.json(artwork);
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to fetch distinct artwork asset metrics.", details: err.message });
+    return res.json(artwork);
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to fetch distinct artwork asset metrics.", details: err.message });
   }
 });
 
-router.post("/sync-stock", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
+router.post("/sync-stock", verifyToken as any, verifyRole(["artist", "admin"]) as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const artworkCollection = getArtworkCollection(req);
     const result = await artworkCollection.updateMany(
       { $or: [{ quantity: { $exists: false } }, { quantity: null }, { isSold: true }] },
       { $set: { quantity: 10, isSold: false, updatedAt: new Date() } }
     );
-    res.json({ success: true, message: "Artworks stock synchronized successfully.", modifiedCount: result.modifiedCount });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to synchronize stock.", details: err.message });
+    return res.json({ success: true, message: "Artworks stock synchronized successfully.", modifiedCount: result.modifiedCount });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to synchronize stock.", details: err.message });
   }
 });
 
-const verifyArtworkOwnership = (artwork, user) => {
+const verifyArtworkOwnership = (artwork: any, user: any): boolean => {
   if (!artwork || !user) return false;
   if (user.role === "admin") return true;
 
@@ -324,20 +328,21 @@ const verifyArtworkOwnership = (artwork, user) => {
   return false;
 };
 
-router.patch("/:id/stock", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
+router.patch("/:id/stock", verifyToken as any, verifyRole(["artist", "admin"]) as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const artworkCollection = getArtworkCollection(req);
-    const oid = toOid(req.params.id);
+    const id = req.params.id as string;
+    const oid = toOid(id);
     const { delta, quantity } = req.body;
 
-    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
+    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: id }] } as any);
     if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork listing not found." });
 
     if (!verifyArtworkOwnership(existingArtwork, req.user)) {
       return res.status(403).json({ error: true, message: "Forbidden: You can only adjust stock for your own artworks." });
     }
 
-    let newQuantity;
+    let newQuantity: number;
     if (typeof quantity === "number") {
       newQuantity = Math.max(0, quantity);
     } else if (typeof delta === "number") {
@@ -356,14 +361,14 @@ router.patch("/:id/stock", verifyToken, verifyRole(["artist", "admin"]), async (
       { returnDocument: "after" }
     );
 
-    const updatedDoc = result && result.value ? result.value : result;
-    res.json({ success: true, data: updatedDoc });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to update artwork stock.", details: err.message });
+    const updatedDoc = (result as any)?.value || result;
+    return res.json({ success: true, data: updatedDoc });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to update artwork stock.", details: err.message });
   }
 });
 
-router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
+router.post("/", verifyToken as any, verifyRole(["artist", "admin"]) as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const artworkCollection = getArtworkCollection(req);
     const userCollection = getUserCollection(req);
@@ -377,23 +382,23 @@ router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) 
       return res.status(400).json({ error: true, message: "The resource link provided must be a valid, direct HTTPS image URL." });
     }
 
-    const artistProfile = await userCollection.findOne({ email: req.user.email });
+    const artistProfile = await userCollection.findOne({ email: req.user!.email });
     if (!artistProfile) {
       return res.status(404).json({ error: true, message: "Associated platform artist identity record missing." });
     }
 
-    const currentTier = (artistProfile.plan || artistProfile.subscription?.plan || artistProfile.subscriptionTier || "free").toLowerCase();
+    const currentTier = ((artistProfile as any).plan || (artistProfile as any).subscription?.plan || (artistProfile as any).subscriptionTier || "free").toLowerCase();
    
     const totalExistingArtworks = await artworkCollection.countDocuments({
       $or: [
-        { userId: req.user.id },
-        { userId: toOid(req.user.id) },
-        { artistEmail: req.user.email },
-        { userEmail: req.user.email },
-      ]
+        { userId: req.user!.id },
+        { userId: toOid(req.user!.id || "") },
+        { artistEmail: req.user!.email },
+        { userEmail: req.user!.email },
+      ],
     });
 
-    const TIER_LIMITS = { free: 5, basic: 20, pro: 60, ultimate: Infinity };
+    const TIER_LIMITS: Record<string, number> = { free: 5, basic: 20, pro: 60, ultimate: Infinity };
     const maxAllowed = TIER_LIMITS[currentTier] ?? 5;
 
     if (maxAllowed !== Infinity && totalExistingArtworks >= maxAllowed) {
@@ -407,21 +412,20 @@ router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) 
       });
     }
 
-
     const initialQty = req.body.quantity !== undefined ? Math.max(0, parseInt(req.body.quantity, 10)) : 1;
     const resolvedQty = isNaN(initialQty) ? 1 : initialQty;
    
-    const doc = {
+    const doc: any = {
       title,
       description: description || "",
       category: category || "Uncategorized",
       image,
       price: Number(price),
       quantity: resolvedQty,
-      userId: req.user.id,
-      artistId: req.user.id,
-      artistEmail: req.user.email,
-      artistName: artistProfile.name || "Anonymous Artist",
+      userId: req.user!.id,
+      artistId: req.user!.id,
+      artistEmail: req.user!.email,
+      artistName: (artistProfile as any).name || "Anonymous Artist",
       isSold: resolvedQty === 0,
       status: resolvedQty === 0 ? "sold" : "available",
       isDraft: false,
@@ -429,19 +433,20 @@ router.post("/", verifyToken, verifyRole(["artist", "admin"]), async (req, res) 
     };
    
     const result = await artworkCollection.insertOne(doc);
-    res.status(201).json({ success: true, ...doc, _id: result.insertedId });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to register portfolio artwork item entry.", details: err.message });
+    return res.status(201).json({ success: true, ...doc, _id: result.insertedId });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to register portfolio artwork item entry.", details: err.message });
   }
 });
 
-router.put("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
+router.put("/:id", verifyToken as any, verifyRole(["artist", "admin"]) as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const artworkCollection = getArtworkCollection(req);
-    const oid = toOid(req.params.id);
+    const id = req.params.id as string;
+    const oid = toOid(id);
     const { title, description, price, category, image, isSold } = req.body;
 
-    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
+    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: id }] } as any);
     if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork listing profile target missing." });
 
     if (!verifyArtworkOwnership(existingArtwork, req.user)) {
@@ -452,8 +457,8 @@ router.put("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res
       return res.status(400).json({ error: true, message: "The modified link resource must be a valid, direct HTTPS image URL." });
     }
    
-    const updatePayload = {
-      updatedAt: new Date()
+    const updatePayload: any = {
+      updatedAt: new Date(),
     };
     if (title !== undefined) updatePayload.title = title;
     if (description !== undefined) updatePayload.description = description;
@@ -485,19 +490,20 @@ router.put("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res
       { returnDocument: "after" }
     );
      
-    const updatedDoc = result.value || result;
-    res.json({ success: true, data: updatedDoc });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to update catalog artwork metadata fields.", details: err.message });
+    const updatedDoc = (result as any)?.value || result;
+    return res.json({ success: true, data: updatedDoc });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to update catalog artwork metadata fields.", details: err.message });
   }
 });
 
-router.delete("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, res) => {
+router.delete("/:id", verifyToken as any, verifyRole(["artist", "admin"]) as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const artworkCollection = getArtworkCollection(req);
-    const oid = toOid(req.params.id);
+    const id = req.params.id as string;
+    const oid = toOid(id);
    
-    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: req.params.id }] });
+    const existingArtwork = await artworkCollection.findOne({ $or: [{ _id: oid }, { _id: id }] } as any);
     if (!existingArtwork) return res.status(404).json({ error: true, message: "Artwork catalog item target missing." });
 
     if (!verifyArtworkOwnership(existingArtwork, req.user)) {
@@ -505,58 +511,59 @@ router.delete("/:id", verifyToken, verifyRole(["artist", "admin"]), async (req, 
     }
 
     await artworkCollection.deleteOne({ _id: existingArtwork._id });
-    res.json({ success: true, message: "Artwork deleted successfully from live index channels." });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to terminate data footprint maps.", details: err.message });
+    return res.json({ success: true, message: "Artwork deleted successfully from live index channels." });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to terminate data footprint maps.", details: err.message });
   }
 });
 
-router.get("/:id/comments", async (req, res) => {
+router.get("/:id/comments", async (req: Request, res: Response) => {
   try {
     const commentCollection = getCommentCollection(req);
+    const id = req.params.id as string;
     const comments = await commentCollection
-      .find({ artworkId: req.params.id })
+      .find({ artworkId: id })
       .sort({ createdAt: -1 })
       .toArray();
-    res.json(comments);
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to compile linear item commentary streams.", details: err.message });
+    return res.json(comments);
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to compile linear item commentary streams.", details: err.message });
   }
 });
 
-router.post("/:id/comments", verifyToken, async (req, res) => {
+router.post("/:id/comments", verifyToken as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const commentCollection = getCommentCollection(req);
     const orderCollection = getOrderCollection(req);
     const { text } = req.body;
-    const artworkId = req.params.id;
+    const artworkId = req.params.id as string;
 
     if (!text?.trim()) {
       return res.status(400).json({ error: true, message: "Comment feedback core message body parameter required." });
     }
 
     const purchased = await orderCollection.findOne({
-      artworkId: toOid(artworkId) || artworkId,
-      buyerEmail: req.user.email,
+      artworkId: (toOid(artworkId) || artworkId) as any,
+      buyerEmail: req.user!.email,
     });
    
     if (!purchased) {
       return res.status(403).json({ error: true, message: "Transaction barrier: Verified asset purchase receipt verification required." });
     }
 
-    const doc = {
+    const doc: any = {
       artworkId,
-      userId: req.user.id,
-      userEmail: req.user.email,
+      userId: req.user!.id,
+      userEmail: req.user!.email,
       text: text.trim(),
       createdAt: new Date(),
     };
    
     const result = await commentCollection.insertOne(doc);
-    res.status(201).json({ success: true, ...doc, _id: result.insertedId });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to log commentary data node.", details: err.message });
+    return res.status(201).json({ success: true, ...doc, _id: result.insertedId });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to log commentary data node.", details: err.message });
   }
 });
 
-module.exports = router;
+export default router;

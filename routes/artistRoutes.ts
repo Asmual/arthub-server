@@ -1,29 +1,35 @@
-const express = require("express");
+import express, { Request, Response } from "express";
+import { ObjectId } from "mongodb";
+import { verifyToken } from "../middlewares";
+import { getUserCollection, getArtworkCollection } from "../models/collections";
+import { AuthenticatedRequest } from "../types";
+
 const router = express.Router();
-const { ObjectId } = require("mongodb");
-const { verifyToken } = require("../middlewares");
-const { getUserCollection, getArtworkCollection } = require("../models/collections");
 
 /**
  * Utility helper to safely cast string IDs to MongoDB ObjectIds
  */
-const toOid = (id) => {
-  try { return ObjectId.isValid(id) ? new ObjectId(id) : null; } catch { return null; }
+const toOid = (id: string): ObjectId | null => {
+  try {
+    return ObjectId.isValid(id) ? new ObjectId(id) : null;
+  } catch {
+    return null;
+  }
 };
 
 /**
  * Escapes special regex characters to prevent query failures
  */
-const escapeRegex = (string) => {
+const escapeRegex = (string: string): string => {
   return string.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
 };
 
 /**
  * @route   GET /api/artists/top
- * @desc    Fetch top 3 artists mapped via processed sale aggregation volumes
+ * @desc    Fetch top 3-4 artists mapped via processed sale aggregation volumes
  * @access  Public
  */
-router.get("/top", async (req, res) => {
+router.get("/top", async (req: Request, res: Response) => {
   try {
     const userCollection = getUserCollection(req);
     const artworkCollection = getArtworkCollection(req);
@@ -34,23 +40,23 @@ router.get("/top", async (req, res) => {
       .toArray();
 
     const artistsWithStats = await Promise.all(
-      artists.map(async (artist) => {
+      artists.map(async (artist: any) => {
         const artistStrId = artist._id.toString();
-        
-        const artworkQuery = {
+
+        const artworkQuery: any = {
           $or: [
             { userId: artistStrId },
             { artistId: artistStrId },
             { userId: artist._id },
             { artistId: artist._id },
             { artistEmail: artist.email },
-            { userEmail: artist.email }
-          ]
+            { userEmail: artist.email },
+          ],
         };
 
         const artworks = await artworkCollection.find(artworkQuery).toArray();
         const totalArtworks = artworks.length;
-        const totalSold = artworks.filter((a) => a.isSold === true).length;
+        const totalSold = artworks.filter((a: any) => a.isSold === true).length;
 
         return {
           ...artist,
@@ -63,9 +69,9 @@ router.get("/top", async (req, res) => {
     // Sort and return top 4 artists based on total sales
     artistsWithStats.sort((a, b) => b.totalSold - a.totalSold);
 
-    res.json(artistsWithStats.slice(0, 4));
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to compile top tier artist rosters.", details: err.message });
+    return res.json(artistsWithStats.slice(0, 4));
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to compile top tier artist rosters.", details: err.message });
   }
 });
 
@@ -74,17 +80,17 @@ router.get("/top", async (req, res) => {
  * @desc    Browse registered artist accounts with specialized text pattern matching filters and dynamic artwork metrics
  * @access  Public
  */
-router.get("/", async (req, res) => {
+router.get("/", async (req: Request, res: Response) => {
   try {
     const userCollection = getUserCollection(req);
     const artworkCollection = getArtworkCollection(req);
-    const { search, specialty } = req.query;
-    const filter = { role: "artist" };
+    const { search, specialty } = req.query as { search?: string; specialty?: string };
+    const filter: any = { role: "artist" };
 
     if (search?.trim() && search !== "undefined" && search !== "null") {
       const sanitizedSearch = escapeRegex(search.trim());
       filter.$or = [
-        { name:      { $regex: sanitizedSearch, $options: "i" } },
+        { name: { $regex: sanitizedSearch, $options: "i" } },
         { specialty: { $regex: sanitizedSearch, $options: "i" } },
       ];
     }
@@ -98,23 +104,23 @@ router.get("/", async (req, res) => {
 
     // Calculate artwork count dynamically for each artist
     const enrichedArtists = await Promise.all(
-      artists.map(async (artist) => {
+      artists.map(async (artist: any) => {
         const artistStrId = artist._id.toString();
 
-        const artworkQuery = {
+        const artworkQuery: any = {
           $or: [
             { userId: artistStrId },
             { artistId: artistStrId },
             { userId: artist._id },
             { artistId: artist._id },
             { artistEmail: artist.email },
-            { userEmail: artist.email }
-          ]
+            { userEmail: artist.email },
+          ],
         };
 
         const artworks = await artworkCollection.find(artworkQuery).toArray();
         const totalArtworks = artworks.length;
-        const totalSold = artworks.filter((a) => a.isSold === true).length;
+        const totalSold = artworks.filter((a: any) => a.isSold === true).length;
 
         return {
           ...artist,
@@ -124,9 +130,9 @@ router.get("/", async (req, res) => {
       })
     );
 
-    res.json(enrichedArtists);
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to execute artist database directory searches.", details: err.message });
+    return res.json(enrichedArtists);
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to execute artist database directory searches.", details: err.message });
   }
 });
 
@@ -135,12 +141,12 @@ router.get("/", async (req, res) => {
  * @desc    Dedicated search endpoint redirecting or processing raw query params
  * @access  Public
  */
-router.get("/search", async (req, res) => {
+router.get("/search", async (req: Request, res: Response) => {
   try {
     const artworkCollection = getArtworkCollection(req);
-    const { query } = req.query;
-    
-    const finalFilter = {};
+    const { query } = req.query as { query?: string };
+
+    const finalFilter: any = {};
     if (query?.trim()) {
       const sanitizedSearch = escapeRegex(query.trim());
       const searchRegex = new RegExp(sanitizedSearch, "i");
@@ -148,9 +154,9 @@ router.get("/search", async (req, res) => {
     }
 
     const artworks = await artworkCollection.find(finalFilter).limit(12).toArray();
-    res.json(artworks);
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Search endpoint compilation error.", details: err.message });
+    return res.json(artworks);
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Search endpoint compilation error.", details: err.message });
   }
 });
 
@@ -159,26 +165,28 @@ router.get("/search", async (req, res) => {
  * @desc    Fetch operational profile variables for an individual target artist account with dynamic count
  * @access  Public
  */
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req: Request, res: Response) => {
   try {
     const userCollection = getUserCollection(req);
     const artworkCollection = getArtworkCollection(req);
-    const artistId = req.params.id;
+    const artistId = req.params.id as string;
     const oid = toOid(artistId);
-   
+
     const artist = await userCollection.findOne(
-      { $or: [{ _id: oid }, { id: artistId }], role: "artist" },
+      { $or: [{ _id: oid }, { id: artistId }], role: "artist" } as any,
       { projection: { password: 0, hashedPassword: 0 } }
     );
-    if (!artist) return res.status(404).json({ error: true, message: "Target artist metric configuration registry record missing." });
+    if (!artist) {
+      return res.status(404).json({ error: true, message: "Target artist metric configuration registry record missing." });
+    }
 
-    const artworkQuery = {
+    const artworkQuery: any = {
       $or: [
         { userId: artistId },
         { artistId: artistId },
         { artistEmail: artist.email },
-        { userEmail: artist.email }
-      ]
+        { userEmail: artist.email },
+      ],
     };
     if (oid) {
       artworkQuery.$or.push({ userId: oid }, { artistId: oid });
@@ -186,41 +194,41 @@ router.get("/:id", async (req, res) => {
 
     const artworks = await artworkCollection.find(artworkQuery).toArray();
     const totalArtworks = artworks.length;
-    const totalSold = artworks.filter((a) => a.isSold === true).length;
+    const totalSold = artworks.filter((a: any) => a.isSold === true).length;
 
-    res.json({
+    return res.json({
       ...artist,
       totalArtworks,
       totalSold: artist.totalSold ?? totalSold,
     });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to execute precise profile query matching.", details: err.message });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to execute precise profile query matching.", details: err.message });
   }
 });
 
 /**
- * @route   GET /api/artist/:id/stats
+ * @route   GET /api/artists/:id/stats
  * @desc    Retrieve dynamic portfolio performance values and financial processing counters via database aggregation calculations
  * @access  Private (JWT Required)
  */
-router.get("/:id/stats", verifyToken, async (req, res) => {
+router.get("/:id/stats", verifyToken as any, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userCollection = getUserCollection(req);
     const artworkCollection = getArtworkCollection(req);
-    const artistId = req.params.id;
+    const artistId = req.params.id as string;
     const oid = toOid(artistId);
 
     const artist = await userCollection.findOne({
       $or: [{ _id: oid }, { id: artistId }],
-    });
+    } as any);
 
-    const artworkQuery = {
+    const artworkQuery: any = {
       $or: [
         { userId: artistId },
         { artistId: artistId },
         { artistEmail: artist?.email },
-        { userEmail: artist?.email }
-      ].filter(Boolean)
+        { userEmail: artist?.email },
+      ].filter(Boolean),
     };
     if (oid) {
       artworkQuery.$or.push({ userId: oid }, { artistId: oid });
@@ -228,16 +236,16 @@ router.get("/:id/stats", verifyToken, async (req, res) => {
 
     const artworks = await artworkCollection.find(artworkQuery).toArray();
 
-    const soldItems     = artworks.filter((a) => a.isSold === true);
+    const soldItems = artworks.filter((a: any) => a.isSold === true);
     const totalArtworks = artworks.length;
-    const totalSales    = soldItems.length;
-    const totalRevenue  = soldItems.reduce((sum, current) => sum + (Number(current.price) || 0), 0);
-    const followers     = artist?.followers ?? 0;
+    const totalSales = soldItems.length;
+    const totalRevenue = soldItems.reduce((sum: number, current: any) => sum + (Number(current.price) || 0), 0);
+    const followers = (artist as any)?.followers ?? 0;
 
-    res.json({ totalArtworks, totalSales, totalRevenue, followers });
-  } catch (err) {
-    res.status(500).json({ error: true, message: "Failed to compute portfolio analytical statistics.", details: err.message });
+    return res.json({ totalArtworks, totalSales, totalRevenue, followers });
+  } catch (err: any) {
+    return res.status(500).json({ error: true, message: "Failed to compute portfolio analytical statistics.", details: err.message });
   }
 });
 
-module.exports = router;
+export default router;

@@ -1,24 +1,24 @@
-const express = require("express");
-const cors = require("cors");
-require("dotenv").config();
-const connectDB = require("./config/db");
-
+import express, { Request, Response, NextFunction } from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import connectDB from "./config/db";
 
 // Core router configurations pipeline mapping
-const artistRoutes = require("./routes/artistRoutes");
-const artworkRoutes = require("./routes/artworkRoutes");
-const reviewRoutes = require("./routes/reviewRoutes");
-const paymentRoutes = require("./routes/paymentRoutes");
-const userRoutes = require("./routes/userRoutes");
-const adminRoutes = require("./routes/adminRoutes");
-const subscriptionRoutes = require("./routes/subscriptionRoutes");
-const aiRoutes = require("./routes/aiRoutes");
+import artistRoutes from "./routes/artistRoutes";
+import artworkRoutes from "./routes/artworkRoutes";
+import reviewRoutes from "./routes/reviewRoutes";
+import paymentRoutes from "./routes/paymentRoutes";
+import userRoutes from "./routes/userRoutes";
+import adminRoutes from "./routes/adminRoutes";
+import subscriptionRoutes from "./routes/subscriptionRoutes";
+import aiRoutes from "./routes/aiRoutes";
+
+dotenv.config();
 
 const app = express();
-
 const port = process.env.PORT || 5000;
 
-const allowedOrigins = [
+const allowedOrigins: string[] = [
   "http://localhost:3000",
   "https://arthub-three.vercel.app",
 ];
@@ -36,19 +36,18 @@ app.use(
   })
 );
 
-
 app.use("/api/payment/webhook", express.raw({ type: "application/json" }));
 
 // Standard JSON parser for all other incoming API operations
 app.use(express.json());
 
-async function startServer() {
+async function startServer(): Promise<void> {
   try {
     // Await primary database thread mapping instantiation layer
     const db = await connectDB();
 
     // Default target probe validation landing page
-    app.get("/", (req, res) => {
+    app.get("/", (_req: Request, res: Response) => {
       res.send("ArtHub Server running with Database Connected via Hybrid Security Blueprint.");
     });
 
@@ -66,9 +65,8 @@ async function startServer() {
     app.use("/api/subscription", subscriptionRoutes);
     app.use("/api/ai", aiRoutes);
 
-   
     // Global Centralized Fail-Safe Exception Catchment Endpoint Setup
-    app.use((err, req, res, next) => {
+    app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       console.error("Global Infrastructure Error Caught:", err);
       res.status(500).json({
         error: true,
@@ -81,7 +79,6 @@ async function startServer() {
       console.log(`Server executing successfully on runtime environment port ${port}`);
       console.log(`Live API Routing Cluster: http://localhost:${port}`);
     });
-
   } catch (error) {
     console.error("Platform initialization protocol crash:", error);
     process.exit(1);
@@ -89,3 +86,5 @@ async function startServer() {
 }
 
 startServer();
+
+export default app;
