@@ -82,7 +82,8 @@ router.post("/create-checkout-session", async (req: Request, res: Response) => {
   try {
     const db = req.app.get("db") as Db;
     const artworkCollection = db.collection("artworks");
-    const { artworkId, price, name, email, phone } = req.body;
+    const { artworkId, price, name, email, phone, quantity } = req.body;
+    const orderQty = Math.max(1, parseInt(quantity || "1", 10) || 1);
 
     const authenticatedUser = (await resolveCheckoutUser(req)) || {};
     if (authenticatedUser.role === "admin") {
@@ -136,7 +137,7 @@ router.post("/create-checkout-session", async (req: Request, res: Response) => {
     ).replace(/\/$/, "");
 
     const productData: any = {
-      name: artwork.title || "Original Artwork",
+      name: orderQty > 1 ? `${artwork.title || "Original Artwork"} (×${orderQty})` : (artwork.title || "Original Artwork"),
       description: artwork.category ? `Category: ${artwork.category}` : "Original ArtHub Piece",
     };
 
@@ -174,6 +175,7 @@ router.post("/create-checkout-session", async (req: Request, res: Response) => {
         artworkTitle: artwork.title || "Original Artwork",
         artistEmail: artistEmail,
         price: String(price || artwork.price),
+        quantity: String(orderQty),
       },
     });
 
@@ -203,7 +205,8 @@ router.post("/verify-payment-sync", async (req: AuthenticatedRequest, res: Respo
       return res.status(400).json({ success: false, message: "Payment has not been completed." });
     }
 
-    const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle } = session.metadata || {};
+    const { artworkId, buyerId, buyerEmail, artistEmail, artworkTitle, quantity } = session.metadata || {};
+    const purchasedQty = Math.max(1, parseInt(quantity || "1", 10) || 1);
 
     const existingOrder = await orderCollection.findOne({ transactionId: session.id });
     if (existingOrder) {
@@ -224,6 +227,7 @@ router.post("/verify-payment-sync", async (req: AuthenticatedRequest, res: Respo
       type: "purchase",
       artworkId: artworkDoc ? artworkDoc._id : (artworkOid || artworkId),
       artworkTitle: artworkTitle || artworkDoc?.title || "Original Artwork",
+      quantity: purchasedQty,
       artworkImage: artworkDoc?.image || "",
       artworkDetails: artworkDoc ? {
         _id: artworkDoc._id,
@@ -259,7 +263,7 @@ router.post("/verify-payment-sync", async (req: AuthenticatedRequest, res: Respo
     // Decrement artwork stock and update status
     if (artworkDoc) {
       const currentQty = typeof artworkDoc.quantity === "number" ? artworkDoc.quantity : (artworkDoc.isSold ? 0 : 1);
-      const newQty = Math.max(0, currentQty - 1);
+      const newQty = Math.max(0, currentQty - purchasedQty);
       const isNowSold = newQty === 0;
       await artworkCollection.updateOne(
         { _id: artworkDoc._id },
