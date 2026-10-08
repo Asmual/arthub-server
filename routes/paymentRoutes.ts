@@ -88,6 +88,9 @@ router.post("/create-checkout-session", async (req: Request, res: Response) => {
     if (authenticatedUser.role === "admin") {
       return res.status(403).json({ success: false, message: "Admins are not permitted to purchase artworks." });
     }
+    if (authenticatedUser.role === "artist") {
+      return res.status(403).json({ success: false, message: "Artists cannot purchase artworks. Please switch to a collector account." });
+    }
     const userEmail = (email && typeof email === "string" && email.includes("@"))
       ? email.trim()
       : authenticatedUser.email;
