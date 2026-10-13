@@ -20,4 +20,5 @@ Thumbs.db
 
 # Build outputs
 dist/
+
 config.bat
