@@ -5,10 +5,10 @@
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
-    "dev": "node api.js && tsx watch index.ts",
+    "dev": "tsx watch index.ts",
     "build": "rimraf dist && tsc",
     "postinstall": "npm run build",
-    "start": "node api.js && node index.js",
+    "start": "node index.js",
     "typecheck": "tsc --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

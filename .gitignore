@@ -22,3 +22,9 @@ Thumbs.db
 dist/
 
 config.bat
+
+.vscode/
+api.js
+director.js
+.env
+.env.local
